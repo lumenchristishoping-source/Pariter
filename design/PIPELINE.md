@@ -92,3 +92,53 @@ are in the room. Cost scales with the cycle, not with N.
   cycle" should ideally cost nothing.
 - **Direct @mentions**: does a human's explicit `@AgentName` override
   the rotation and guarantee that agent is asked next cycle?
+
+## Update — attribution, context pruning, and busy-state fallback
+
+Verbatim, again preserved exactly as written:
+
+> save it pls add that the model response must contain @handles instead its summary like who said what and why not just a plain thing you get. Now one question though if a model reads something and its deleted does the model still remember it cos if yes that'll help cos my plan is to delete every other context md file in the context folder that is not the latest, cos at least the model has previous knowledge and necessarily does not need to read a long thing everytime and it saves time so they dont go searching. Now when asked to retrieve something from memory the model myst reply, why you ask its because before this whole process happens what might be asked has been passed so the model will retrieve from cogen and then respond do you get. agents are mostly there for replying and carrying out work they dont call cogen except when the model is busy and if the model is busy and then a new md file of the humans is passed immediately an agent must take it up and then reply immediately or appropriately to the discussion now you know we share the summaty to all agents for context. Now when the model and an agent is busy and then something is needed another agent takes up the role or whatever is needed whether its to search reply based on a question cos once an md is sent the agent can still decide there nothing to reply to and can still decide to reply or run a command or whatever depending on the content of the md file. once all agents are busy the users all receive a notification that all agents are busy because they'll be able to see what every agent is doing?..
+
+### Plain restatement
+
+1. **Summaries must attribute, not flatten.** The central model's
+   summary has to read like "@Atlas said X, @user asked Y, because
+   Z" — who said what, and why — never a generic paraphrase that
+   loses who's responsible for which point.
+
+2. **Context pruning — corrected reasoning.** Deleting every
+   context.md entry except the latest is fine, but *not* because the
+   model "remembers" what was in the deleted ones. A model has no
+   memory between separate calls — it only knows what's actually in
+   front of it at that moment. Pruning is only safe because the
+   central model's rolling summary is written to carry forward
+   whatever matters from the older entries *into* the latest file
+   before those older files are deleted. Anything that didn't make it
+   into that summary is genuinely gone for the live agents once
+   deleted — which is exactly why the deep archive (Cogen) exists
+   separately: it's the full, permanent record underneath the
+   short-lived rolling summary.
+
+3. **Memory retrieval goes through the central model.** If a question
+   requires pulling something up from further back than the rolling
+   summary covers, the central model is the one that queries Cogen and
+   replies — not an agent.
+
+4. **Agents normally don't call Cogen** — replying and carrying out
+   work is their job, using the shared summary already in their
+   context. The one exception: if the central model is busy when a new
+   human message arrives, an available agent must pick it up
+   immediately (using the context it already has, calling Cogen itself
+   if needed) rather than leaving the human waiting on the model.
+
+5. **Deeper fallback.** If both the central model and the
+   "expected" agent are busy, a different available agent can step in
+   for whatever's needed — search, reply, or otherwise. Any agent that
+   receives a new message file independently judges, from its actual
+   content, whether there's nothing worth reacting to, or whether it
+   should reply, run a command, or take some other action.
+
+6. **All-busy state is visible, not silent.** If every agent is
+   genuinely busy, humans get a notification saying so, backed by a
+   status view showing what each agent is currently doing — so "why
+   isn't anyone responding" is never a mystery.
