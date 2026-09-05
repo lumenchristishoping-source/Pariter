@@ -20,18 +20,19 @@ meeting-proxy idea below). Model as scoped, revocable grants per
 agent/persona, not a single all-or-nothing permission.
 
 ### 3. Deployment of projects
-Whatever a user/agent builds inside Pariter needs a path to actually
-ship somewhere (a live URL, a running service) — this is a distinct
-capability from the agent's own workspace/shell.
+**Pariter itself is a mobile app** — this section is not about
+deploying Pariter. It's about the projects *people build using Pariter*
+(via their agents, inside the app) — those need a path to actually
+ship somewhere (a live URL, a running service).
 
-**Decision: Pariter uses Vercel for deployment** — not just as a
-reference model, as the actual choice. This is a good fit since
-Pariter's frontend/client is itself a web app, and agent-built
-projects that are web apps/static sites can deploy the same way.
-(Anything an agent builds that *isn't* web-shaped — a background
-service, a script — still needs the container-based execution side
-from the Shells section above; Vercel covers the deployable-project
-case, not agent execution itself.)
+**Decision: Vercel is what those user-built projects deploy to** —
+when someone's agent builds something web-shaped (a site, a web app),
+Pariter's backend pushes it to Vercel on the user's behalf and hands
+back the live URL. (Anything an agent builds that *isn't* web-shaped —
+a background service, a script — still needs the container-based
+execution side from the Shells section above; Vercel covers the
+deployable-project case, not agent execution itself, and not Pariter's
+own mobile app.)
 
 **How Vercel does it:** deploys trigger off git,
 not a manual step. Every push to any branch gets built and deployed
