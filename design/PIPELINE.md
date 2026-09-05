@@ -177,8 +177,8 @@ This is a spec addition, not an implementation change — Cogen's
 actual code stays untouched until it's called for again; this section
 just documents the intended shape for when that happens.
 
-### Open question
+### Open question — resolved
 
-What defines a "session" boundary for bucket 2 — a single
-conversation, a work sprint, a calendar day, something else? Worth
-pinning down before this gets built.
+A session ends when the conversation ends, marked by an explicit "End
+session" button (to be added later as a feature) — not a timer, not a
+calendar boundary.
