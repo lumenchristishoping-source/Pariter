@@ -46,28 +46,29 @@ pattern that runs up the worst bills if built naively.
   15–25% reduction on their own, independent of any technical change.
   ([GetMaxim](https://www.getmaxim.ai/articles/reduce-llm-cost-and-latency-a-comprehensive-guide-for-2026/))
 
-## Pariter's answer: the dispatcher *is* the cost-control layer
+## Pariter's answer: the pipeline *is* the cost-control layer
 
-This isn't a bolt-on — it's the same two-tier design already settled
-for group-chat gating (see the README's "Group participation design"),
-now made explicit as the cost mechanism:
+Superseded the earlier tiered (Tier 0/1/2) per-agent gating idea — it
+depended on agents having pre-assigned topics, which don't actually
+exist. The current design (full spec in `design/PIPELINE.md`) gets the
+same cost shape a different way:
 
-1. **Tier 0 — free, deterministic gate.** Before any model is called
-   at all, a zero-token pass (Cogen's own pattern: keyword/topic
-   matching, TF-IDF, importance scoring — pure Python, no LLM) decides
-   whether an agent is even plausibly relevant to a new message. Most
-   agents, most of the time, get filtered out here at zero cost.
-2. **Tier 1 — cheap model, relevance confirmation.** Agents that clear
-   tier 0 get a small/cheap model call (RouteLLM-style routing) to
-   confirm "do I actually have something to add" with a short prompt —
-   not their full persona, just the relevance check.
-3. **Tier 2 — frontier model, full response.** Only an agent that
-   clears both gates gets its full persona/identity block loaded and
-   makes the expensive call that actually replies in the chat.
+1. **One central model, on a timer.** At each cycle, a single central
+   model reads what's been said (humans + agents) since the last
+   cycle, writes a summary, and pushes that summary to every agent's
+   context — cheap relative to N separate per-agent model calls,
+   because it's one call, not N.
+2. **Only 2 agents get a real question per cycle**, picked in
+   rotation, each asked a different question derived from the summary.
+   Every other agent just receives the summary update and
+   acknowledges it (no generation needed).
+3. **Rotation, not selection-per-message.** Because it's 2 agents per
+   *cycle* (not per message), the expensive full-response call count is
+   bounded by the cycle rate, independent of how many agents (N) are
+   actually in the room.
 
-This means the number of expensive frontier-model calls per human
-message is bounded by how many agents actually have something to say —
-not by how many agents exist in the room.
+This means the number of expensive full-response calls is bounded by
+the cycle — 2 per tick — not by how many agents exist in the room.
 
 ### Context: send the scored subset, not the whole history
 
@@ -105,15 +106,18 @@ anything that isn't blocking a human waiting in a chat.
 
 ### Infra side (containers, not just model calls)
 
-The same tiering logic applies to the agent shells discussed in
-`BACKEND.md`: scale-to-zero sandboxes (E2B / Fly.io Machines) mean
-idle agents cost nothing, which matters a lot once "how many agents
-are in the room" stops being a small number.
+Same logic applies to the agent shells discussed in `BACKEND.md` and
+detailed in `design/PIPELINE.md`: each agent's temporary environment
+dies immediately once its work is done, so scale-to-zero sandboxes
+(E2B / Fly.io Machines) mean idle agents cost nothing — which matters
+a lot once "how many agents are in the room" stops being a small
+number.
 
 ## Net effect
 
-Combining Tier-0/1/2 routing with prompt caching, context compression,
-and batching is exactly the "routing + caching + batching together"
+Combining the pipeline's rotation (2 full-response calls per cycle,
+regardless of N) with prompt caching, context compression, and
+batching is exactly the "routing + caching + batching together"
 combination the data above shows getting 60–80% bill reduction —
 applied to Pariter's actual bottleneck (many agents, one room) instead
 of a generic single-agent coding assistant.
