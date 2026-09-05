@@ -142,3 +142,43 @@ Verbatim, again preserved exactly as written:
    genuinely busy, humans get a notification saying so, backed by a
    status view showing what each agent is currently doing — so "why
    isn't anyone responding" is never a mystery.
+
+## Update — Cogen's three-part storage shape
+
+Verbatim:
+
+> also pls make it that every summary is saved with a title and timestamp in cogen and the reason is because the model can easily search through things and also there still be a separate section in cogen for the saved schedule everything said is saved immediately so cogen will be split in 3,
+> 1. The whole memory with their timestamps which just contains all teh things that have been saved so far
+> 2. the sessions all the saved sessions
+> 3. the saved summaty by the model.
+>
+> i think that should cover every bit of things.
+
+### Plain restatement
+
+Cogen's storage splits into three distinct sections, because a raw
+message, a session, and a written summary are different shapes of
+thing and get searched for different reasons:
+
+1. **Whole memory** — every single thing said, saved immediately as
+   it happens, each entry timestamped. This is the full, permanent
+   record — nothing here is ever pruned (unlike the live context.md
+   files, which do get pruned down to the latest entry).
+2. **Sessions** — saved sessions, each its own record, so a whole
+   conversation/work session can be pulled up as a unit rather than
+   only being reachable message-by-message.
+3. **Summaries** — every summary the central model produces gets
+   saved here with a **title and a timestamp**, specifically so the
+   model can search through past summaries quickly (search by title
+   or time range) instead of having to re-derive an old summary from
+   raw messages.
+
+This is a spec addition, not an implementation change — Cogen's
+actual code stays untouched until it's called for again; this section
+just documents the intended shape for when that happens.
+
+### Open question
+
+What defines a "session" boundary for bucket 2 — a single
+conversation, a work sprint, a calendar day, something else? Worth
+pinning down before this gets built.
