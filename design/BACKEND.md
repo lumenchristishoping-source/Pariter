@@ -24,6 +24,24 @@ Whatever a user/agent builds inside Pariter needs a path to actually
 ship somewhere (a live URL, a running service) — this is a distinct
 capability from the agent's own workspace/shell.
 
+**Reference model — how Vercel does it:** deploys trigger off git,
+not a manual step. Every push to any branch gets built and deployed
+automatically to its own unique, ephemeral URL (a "preview
+deployment") — so a PR/branch can be checked live before it touches
+production; merging to the production branch is what promotes a build
+to the real domain. If two commits land on the same branch while a
+build is still running, the running one finishes, the newer commit
+queues, and anything queued behind *that* gets cancelled in favor of
+whichever commit is most recent — so production always reflects the
+latest push rather than working through a backlog.
+([Vercel: Deployments](https://vercel.com/docs/deployments), [Vercel: Git](https://vercel.com/docs/git))
+
+Worth copying directly for whatever an agent deploys on a user's
+behalf inside Pariter: automatic build-on-push, a disposable
+preview URL per change so nothing touches production by accident,
+and "latest commit wins" queueing so a burst of agent-driven commits
+doesn't pile up a slow backlog of stale builds.
+
 ### 4. Remote / distributed work
 Agents and users aren't all on one machine. The backend is the thing
 that makes an agent's workspace and memory reachable from any device a

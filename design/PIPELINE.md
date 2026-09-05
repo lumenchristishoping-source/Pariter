@@ -182,3 +182,67 @@ just documents the intended shape for when that happens.
 A session ends when the conversation ends, marked by an explicit "End
 session" button (to be added later as a feature) — not a timer, not a
 calendar boundary.
+
+## Precedent — this shape already exists as a product category
+
+Checked whether "group of humans + group of AI agents, live, not
+tag-and-wait" is proven or speculative. It's proven:
+
+- **Poe** launched group chats for up to **200 people**, combined with
+  AI models, in the same conversation.
+  ([Poe blog](https://poe.com/blog/introducing-group-chat-for-all-poe-users), [TestingCatalog](https://www.testingcatalog.com/poe-gets-group-ai-chats-for-up-to-200-peaple/))
+- **Character.AI Rooms** mix AI characters with up to 10 human
+  participants, joined via a shareable link.
+  ([AI Companion Pick](https://www.aicompanionpick.com/character-ai-rooms-feature-full-guide))
+- **Shapes Inc** is built specifically around many humans + many AI
+  characters in one room, where the AI "holds onto everyone and
+  responds to the whole table," with persistent memory over days and
+  weeks per room — the same shape as Cogen + the rolling summary here.
+  ([Shapes](https://shapes.inc/group-chats))
+- At least one public hobbyist build of this pattern runs on
+  **Socket.io** so the room reacts live instead of the client polling
+  and waiting.
+  ([DEV Community](https://dev.to/__aki/i-built-a-group-chat-where-multiple-ais-can-talk-to-you-at-the-same-time-1m54))
+
+No public numbers exist for exact latency in these specific
+multi-agent rooms — that bar gets established through our own testing
+(see the tick-interval open parameter above), same as planned.
+
+### What Socket.io is
+
+A library (mainly for Node.js/JavaScript) for **real-time,
+two-way communication between a server and connected clients** — built
+on top of WebSockets (a persistent open connection), with an automatic
+fallback to repeated HTTP requests if a WebSocket connection isn't
+available. The point of it: the server can **push** an event to a
+client the instant something happens, instead of the client having to
+keep asking "anything new yet?" This is the mechanism that makes a
+room feel live — a new message, a new agent reply, or a status change
+reaches every connected device immediately, rather than on the next
+poll. This is very likely the shape of transport Pariter's group chat
+needs (noted as a "real-time transport" gap back in `BACKEND.md`).
+
+## Connecting people to each other and to a room
+
+Two different things are being solved here, worth keeping separate:
+
+1. **Connecting to another person** (a persistent contact/relationship
+   between two accounts) — a one-time handshake.
+2. **Adding someone to a room** — happens afterward, from an existing
+   contacts list, no new handshake needed.
+
+QR code is the right instinct for step 1 **when both people are
+physically together** — scan-to-connect is fast, no typing, and it's
+the same pattern WhatsApp/Signal/Telegram already use for linking. But
+it only works in person. The actual underlying primitive should be a
+**connect token/link**, with the QR code as just one rendering of it:
+
+- In person: show the QR code, the other person scans it, done.
+- Remote: send the same underlying link (text, email, wherever) — the
+  recipient taps it and the app opens straight into "connect with
+  [name]?" without needing a camera at all.
+
+This mirrors what Character.AI Rooms and Poe already do for joining a
+room itself (a shareable link) — applying the same idea one layer
+earlier, at the "become contacts" step, with QR as the in-person
+shortcut for that same link.
