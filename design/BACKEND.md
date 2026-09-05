@@ -87,7 +87,9 @@ execution backend.
   server-side, never on-device.
 - **Usage metering/billing** — every dispatcher check and agent turn
   costs tokens; multi-agent group chat multiplies that fast. Needs
-  per-user/per-team tracking and rate limits from day one.
+  per-user/per-team tracking and rate limits from day one. See
+  `design/COST_STRATEGY.md` for the full model/infra cost plan (tiered
+  routing, caching, context compression, batching).
 - **Audit log** — if an agent can act as a user's proxy (meetings,
   commands), there needs to be a record of what it actually did, both
   for accountability and so the "prep" summary itself is trustworthy.
