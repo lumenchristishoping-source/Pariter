@@ -79,16 +79,26 @@
   .bubble-col{display:flex;flex-direction:column;gap:4px;min-width:0;}
   .row.mine .bubble-col{align-items:flex-end;}
   .name{font-size:11.5px;color:var(--text-dim);padding:0 4px;}
+
+  .bubble-shell{position:relative;}
+  .tail{position:absolute;bottom:-4px;left:6px;width:22px;height:19px;transform:rotate(-18deg);pointer-events:none;}
+  .tail i{position:absolute;border-radius:50%;background:var(--bubble-ai);}
+  .tail i.a{width:9px;height:9px;left:0;top:1px;z-index:2;}
+  .tail i.b{width:9px;height:9px;left:11px;top:1px;z-index:2;}
+  .tail i.c{width:7px;height:7px;left:5px;top:9px;z-index:1;}
+  .row.mine .tail{left:auto;right:6px;transform:rotate(18deg) scaleX(-1);}
+  .row.mine .tail i{background:var(--bubble-user);}
+
   .bubble{
+    position:relative;z-index:3;
     background:var(--bubble-ai);
     border:1px solid var(--bubble-ai-border);
-    border-radius:16px 16px 16px 4px;
+    border-radius:22px;
     padding:10px 13px;
     font-size:14px;line-height:1.45;color:var(--text);
   }
   .row.mine .bubble{
     background:var(--bubble-user);
-    border-radius:16px 16px 4px 16px;
   }
   .typing{display:flex;gap:4px;padding:13px 14px;align-items:center;}
   .typing span{width:6px;height:6px;border-radius:50%;background:var(--text-dim);opacity:0.4;animation:blink 1.2s infinite;}
@@ -159,13 +169,19 @@
       <div class="avatar" style="background:#2A2B30;">A</div>
       <div class="bubble-col">
         <div class="name">Atlas</div>
-        <div class="bubble">I mapped the onboarding flow against the last three drop&#8209;off points &mdash; the friction is step 2, not step 3 like we assumed.</div>
+        <div class="bubble-shell">
+          <div class="tail"><i class="a"></i><i class="b"></i><i class="c"></i></div>
+          <div class="bubble">I mapped the onboarding flow against the last three drop&#8209;off points &mdash; the friction is step 2, not step 3 like we assumed.</div>
+        </div>
       </div>
     </div>
 
     <div class="row mine">
       <div class="bubble-col">
-        <div class="bubble">Good catch. Can we see the actual drop numbers before we commit to a redesign?</div>
+        <div class="bubble-shell">
+          <div class="tail"><i class="a"></i><i class="b"></i><i class="c"></i></div>
+          <div class="bubble">Good catch. Can we see the actual drop numbers before we commit to a redesign?</div>
+        </div>
       </div>
     </div>
 
@@ -173,7 +189,10 @@
       <div class="avatar" style="background:#35363B;">V</div>
       <div class="bubble-col">
         <div class="name">Vega</div>
-        <div class="bubble">Pulling them now &mdash; cross&#8209;checking against last month&#39;s cohort too, so the number isn&#39;t a fluke.</div>
+        <div class="bubble-shell">
+          <div class="tail"><i class="a"></i><i class="b"></i><i class="c"></i></div>
+          <div class="bubble">Pulling them now &mdash; cross&#8209;checking against last month&#39;s cohort too, so the number isn&#39;t a fluke.</div>
+        </div>
       </div>
     </div>
 
@@ -183,7 +202,10 @@
       <div class="avatar active" style="background:#1E1F23;">S</div>
       <div class="bubble-col">
         <div class="name">Solace</div>
-        <div class="bubble typing"><span></span><span></span><span></span></div>
+        <div class="bubble-shell">
+          <div class="tail"><i class="a"></i><i class="b"></i><i class="c"></i></div>
+          <div class="bubble typing"><span></span><span></span><span></span></div>
+        </div>
       </div>
     </div>
   </div>

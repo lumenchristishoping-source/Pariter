@@ -19,18 +19,15 @@ Reference mockups: [Pariter Group Chat](https://claude.ai/code/artifact/b6a4fd52
 
 ### The "art" layer
 
-Two elements layered onto the base theme, used as sparse accents only
-— never for structural copy or body text:
-
 - **Simple line-drawn shapes** — a squiggle underline beneath section
   headers (`<svg>` path, gold stroke), a hand-drawn arrow, QR-scanner
   viewfinder brackets, a simple line-drawn clock icon. Always inline
-  SVG, stroke-based, never emoji.
-- **Handwriting accent** — Google Font **Caveat**, used only for small
-  human touches: a greeting ("good evening"), a caption ("scan to
-  connect"), a section label ("pick your people"), a tagline ("made
-  for you & yours"). Body copy, labels that need to stay legible, and
-  anything structural stays in the system sans font.
+  SVG, stroke-based, never emoji. Used throughout.
+- **Handwriting accent** (Google Font **Caveat**) — **paused.** It's
+  kept only on the Rooms/home screen for now (the "good evening"
+  greeting) while placement elsewhere is being reconsidered; removed
+  from Connect, New room, and Settings. Don't add it to new screens
+  until told where it belongs.
 
 The logo/mark is intentionally not part of any screen — reserved.
 
@@ -114,15 +111,25 @@ font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Robot
 
 ### Message bubble
 
-- AI (left-aligned): `--bubble-ai` fill, `1px solid
-  --bubble-ai-border`, `border-radius: 16px 16px 16px 4px` (tail toward
-  avatar).
-- User (right-aligned, no avatar): `--bubble-user` fill,
-  `border-radius: 16px 16px 4px 16px`.
+- The bubble itself is a **rectangle with very soft, uniform corners**
+  (`border-radius: 22px` on all four corners — no more single-corner
+  cut). AI (left-aligned): `--bubble-ai` fill, `1px solid
+  --bubble-ai-border`. User (right-aligned, no avatar): `--bubble-user`
+  fill.
+- **Tail**: not a corner cut — a cluster of three small circles behind
+  the bubble, at the bottom corner nearest the avatar side. Two circles
+  ("a", "b") sit side by side at the same height; the third ("c") sits
+  between and below them, layered behind — the three read as a small
+  triangle. The whole cluster is rotated so it leans toward the avatar
+  (AI bubbles: tilted left; user's own bubble: mirrored, tilted right).
+  Circle fill matches the bubble's own background color (`--bubble-ai`
+  or `--bubble-user`), so the tail reads as part of the same bubble,
+  not a separate shape.
 - Name label sits above the bubble, not inside it.
 - Typing/streaming indicator: three pulsing dots
   (`--text-dim`, staggered `blink` keyframe animation) inside a bubble
-  shell, shown for an agent about to speak.
+  shell (with the same tail treatment), shown for an agent about to
+  speak.
 - System events (e.g. "X joined the discussion") are plain centered
   text, `--text-faint`, no bubble.
 
