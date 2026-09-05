@@ -24,7 +24,16 @@ Whatever a user/agent builds inside Pariter needs a path to actually
 ship somewhere (a live URL, a running service) — this is a distinct
 capability from the agent's own workspace/shell.
 
-**Reference model — how Vercel does it:** deploys trigger off git,
+**Decision: Pariter uses Vercel for deployment** — not just as a
+reference model, as the actual choice. This is a good fit since
+Pariter's frontend/client is itself a web app, and agent-built
+projects that are web apps/static sites can deploy the same way.
+(Anything an agent builds that *isn't* web-shaped — a background
+service, a script — still needs the container-based execution side
+from the Shells section above; Vercel covers the deployable-project
+case, not agent execution itself.)
+
+**How Vercel does it:** deploys trigger off git,
 not a manual step. Every push to any branch gets built and deployed
 automatically to its own unique, ephemeral URL (a "preview
 deployment") — so a PR/branch can be checked live before it touches
