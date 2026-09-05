@@ -4,8 +4,35 @@ This is the source of truth for Pariter's visual design. Build the real
 app UI to match this **strictly** — do not deviate from these tokens or
 component rules without an explicit decision to update this spec.
 
-Reference mockup: [Pariter Group Chat](https://claude.ai/code/artifact/b6a4fd52-4e26-499f-814a-ea4747c3a497)
-Raw source: `design/mockups/group-chat.dc.html`
+Reference mockups: [Pariter Group Chat](https://claude.ai/code/artifact/b6a4fd52-4e26-499f-814a-ea4747c3a497) (first screen) and [Pariter App Mockups](https://claude.ai/code/artifact/41699a64-ba3e-4019-b49d-56895145eee4) (full set, below).
+
+## Screens (locked)
+
+| Screen | Raw source | What it's for |
+|---|---|---|
+| Connect | `design/mockups/onboarding.dc.html` | QR-scan / share-link handshake between two people |
+| Rooms (home) | `design/mockups/home.dc.html` | List of rooms, entry point after connecting |
+| New room | `design/mockups/add-people.dc.html` | Pick people (from contacts) and agents to start a room |
+| Group chat | `design/mockups/group-chat.dc.html` | The room itself — the original locked mockup |
+| Cross-device consent | `design/mockups/action-consent.dc.html` | Accept/decline prompt for an action that would affect every connected device |
+| Settings | `design/mockups/settings.dc.html` | Profile, connected people, agents, preferences |
+
+### The "art" layer
+
+Two elements layered onto the base theme, used as sparse accents only
+— never for structural copy or body text:
+
+- **Simple line-drawn shapes** — a squiggle underline beneath section
+  headers (`<svg>` path, gold stroke), a hand-drawn arrow, QR-scanner
+  viewfinder brackets, a simple line-drawn clock icon. Always inline
+  SVG, stroke-based, never emoji.
+- **Handwriting accent** — Google Font **Caveat**, used only for small
+  human touches: a greeting ("good evening"), a caption ("scan to
+  connect"), a section label ("pick your people"), a tagline ("made
+  for you & yours"). Body copy, labels that need to stay legible, and
+  anything structural stays in the system sans font.
+
+The logo/mark is intentionally not part of any screen — reserved.
 
 ## Theme
 

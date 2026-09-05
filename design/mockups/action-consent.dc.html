@@ -1,0 +1,83 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+  :root{
+    --bg:#09090b;
+    --border:rgba(255,255,255,0.07);
+    --text:#EDEAE2;
+    --text-dim:#9A9A9E;
+    --text-faint:#6C6C71;
+    --gold:#CCBA78;
+    --gold-soft:rgba(204,186,120,0.22);
+  }
+  *{box-sizing:border-box;}
+  body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",Roboto,sans-serif;}
+  .screen{position:relative;width:390px;height:844px;background:var(--bg);overflow:hidden;color:var(--text);}
+
+  .bg-chat{position:absolute;inset:0;padding:80px 20px;filter:blur(6px);opacity:0.5;}
+  .ghost-bubble{max-width:70%;padding:10px 13px;border-radius:16px;background:#1B1C20;border:1px solid rgba(255,255,255,0.06);margin-bottom:14px;height:36px;}
+  .ghost-bubble.mine{margin-left:auto;background:#232428;width:55%;}
+  .ghost-bubble.w1{width:75%;}
+  .ghost-bubble.w2{width:60%;}
+
+  .scrim{position:absolute;inset:0;background:rgba(6,6,8,0.72);display:flex;align-items:center;justify-content:center;padding:24px;}
+
+  .card{
+    width:100%;border-radius:24px;padding:26px 22px 22px;
+    background:rgba(255,255,255,0.055);
+    backdrop-filter:blur(22px) saturate(160%);
+    border:1px solid rgba(255,255,255,0.13);
+    box-shadow:inset 0 1px 0 rgba(255,255,255,0.08), 0 20px 60px rgba(0,0,0,0.6);
+    display:flex;flex-direction:column;align-items:center;text-align:center;gap:14px;
+  }
+  .clock{width:52px;height:52px;border-radius:50%;background:rgba(204,186,120,0.12);display:flex;align-items:center;justify-content:center;}
+  .who{display:flex;align-items:center;gap:8px;}
+  .av{width:26px;height:26px;border-radius:50%;background:#1E1F23;border:1.5px solid var(--gold);display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;}
+  .who-name{font-size:13.5px;color:var(--text-dim);}
+  .ask{font-size:16px;line-height:1.5;font-weight:500;}
+  .ask b{color:var(--gold);font-weight:700;}
+  .status{font-size:12px;color:var(--text-faint);}
+  .status b{color:var(--gold);}
+
+  .row{display:flex;gap:10px;width:100%;margin-top:6px;}
+  .btn{flex:1;padding:13px;border-radius:999px;text-align:center;font-size:14px;font-weight:700;}
+  .btn-ghost{border:1px solid rgba(255,255,255,0.14);color:var(--text-dim);}
+  .btn-gold{background:var(--gold);color:#0B0A08;box-shadow:0 8px 24px rgba(204,186,120,0.35);}
+  .fine{font-size:11px;color:var(--text-faint);margin-top:4px;}
+</style>
+</helmet>
+<div class="screen">
+  <div class="bg-chat">
+    <div class="ghost-bubble w1"></div>
+    <div class="ghost-bubble mine"></div>
+    <div class="ghost-bubble w2"></div>
+  </div>
+  <div class="scrim">
+    <div class="card">
+      <div class="clock">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="13" r="8" stroke="#CCBA78" stroke-width="1.8"/><path d="M12 9v4l3 2" stroke="#CCBA78" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M9 2h6M5 5l1.5 1.5M19 5l-1.5 1.5" stroke="#CCBA78" stroke-width="1.6" stroke-linecap="round"/></svg>
+      </div>
+      <div class="who">
+        <div class="av">S</div>
+        <div class="who-name">@Solace wants to do something</div>
+      </div>
+      <div class="ask">Set an alarm for <b>9:00 AM</b> for everyone in Design Sprint.</div>
+      <div class="status"><b>&#10003;</b> Atlas &nbsp;&middot;&nbsp; <b>&#10003;</b> Vega &nbsp;&middot;&nbsp; waiting on you</div>
+      <div class="row">
+        <div class="btn btn-ghost">Decline</div>
+        <div class="btn btn-gold">Accept</div>
+      </div>
+      <div class="fine">Only devices that accept will get this.</div>
+    </div>
+  </div>
+</div>
+</x-dc>
+</body>
+</html>

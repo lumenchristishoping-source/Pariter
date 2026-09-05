@@ -63,15 +63,21 @@ Sharing a workspace, a conversation, or an agent's output with a team
 or specific people — access control at the level of a workspace/group,
 not just a single user's account.
 
-### 6. Agent-as-meeting-proxy + prep briefing
-An agent joins a meeting in place of the user, then later gives the
-user a prep/briefing on what happened. This needs, concretely:
-- A bot-join integration with the actual meeting platform (Zoom/Google
-  Meet/Teams) — not implied by anything else here, its own piece of work.
-- Speech-to-text transcription of the call.
-- A summarization pass that turns the transcript into the "prep" —
-  reuses the same summarization muscle as Cogen's continuity summaries,
-  but running over a meeting transcript instead of a chat history.
+### 6. Agent-as-stand-in + recap (corrected — not a video meeting)
+Not a Zoom/Meet/Teams integration. The actual scenario: a group has
+arranged to discuss something in a Pariter room, but a member can't be
+there — their agent participates in that room's own text discussion in
+their place, and afterward mails/sends them a transcript or recap.
+This needs, concretely:
+- The agent that stands in already has everything it needs — it's a
+  normal room participant, using the same rolling summary/context
+  every agent already gets (`design/PIPELINE.md`).
+- A recap/mail step once the discussion (or the absent member's
+  return) triggers it: reuses the same summarization muscle as
+  Cogen's continuity summaries, just addressed to one person instead
+  of broadcast to the room.
+- No bot-join, no speech-to-text, no third-party meeting platform —
+  this is entirely inside Pariter's own chat.
 
 ### 7. Shells / execution environments for agents
 Real command + file access per agent (pillar 4 from the original

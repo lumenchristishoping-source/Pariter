@@ -246,3 +246,15 @@ This mirrors what Character.AI Rooms and Poe already do for joining a
 room itself (a shareable link) — applying the same idea one layer
 earlier, at the "become contacts" step, with QR as the in-person
 shortcut for that same link.
+
+## Cross-device actions require per-person consent
+
+Once people are connected across their own devices, an agent can be
+asked to do something that affects everyone at once — e.g. "@Solace
+set an alarm for 9:00 AM for all of us." That action does **not**
+execute automatically on every device. Each person gets asked to
+accept or decline; the action only actually fires (the alarm gets set)
+on the devices of whoever accepted. Nobody is bound to an action
+another person requested on their behalf just because they're in the
+room — this is the authorization/consent model (`BACKEND.md`, pillar
+2) made concrete for the multi-device case specifically.
