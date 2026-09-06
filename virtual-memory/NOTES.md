@@ -69,3 +69,30 @@ storage environment rather than a narrow compute sandbox.
   on-device? Firecracker specifically requires KVM, which rules out
   running it directly on iOS/Android — worth confirming the target
   environment before committing to it.
+
+## Live findings from this session's sandbox
+
+Confirmed requirement: **no raw/direct host CPU access** — the
+container must run on a real virtual CPU boundary (a hypervisor
+mediating every instruction trap), not just syscall interception.
+
+- **This exact sandbox cannot provide that.** `/dev/kvm` doesn't
+  exist, and — more fundamentally — `/proc/cpuinfo` shows no
+  `vmx`/`svm` flags at all, meaning hardware virtualization instructions
+  aren't exposed to this container in the first place. Not a
+  permissions issue; nested virtualization isn't passed through.
+- **Tested gVisor (`runsc`) here as a possible substitute — it does
+  NOT satisfy this requirement.** Its ptrace platform (the only one
+  that works without KVM) intercepts syscalls, but application code
+  still executes directly on the real physical CPU. Proved the
+  collapse-and-reform lifecycle works (`runsc do` twice, second
+  instance had zero visibility into the first's files) — genuinely
+  useful for ephemerality, but not for CPU isolation specifically.
+- **What actually satisfies "no raw CPU access"**: Firecracker (or
+  gVisor's own KVM platform) — both need `/dev/kvm` and real
+  virtualization flags on the host. `firecracker/setup.sh` in this
+  folder is the ready-to-run setup (fetches the binary, a minimal
+  guest kernel + rootfs, writes the VM config) for a real host that
+  has them — a bare-metal cloud instance, a VM with nested
+  virtualization enabled, or a personal machine with virtualization
+  support. It won't run in a sandbox shaped like this one.
