@@ -72,6 +72,16 @@ class PackedVirtualStorage:
     def list_ids(self):
         return list(self._meta.keys())
 
+    def forget(self, file_id: str) -> None:
+        """Remove one file's pieces out of the shared boxes while
+        everything else keeps falling - death for this file only."""
+        if file_id not in self._meta:
+            return
+        self._content_box.remove(file_id)
+        self._structure_box.remove(file_id)
+        self._metadata_box.remove(file_id)
+        del self._meta[file_id]
+
     def thread_count(self) -> int:
         """How many falling threads exist right now - 3, no matter how
         many files are held, unlike system.py's VirtualStorage (3 per
