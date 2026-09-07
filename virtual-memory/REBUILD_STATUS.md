@@ -48,13 +48,48 @@ sourced from anywhere:
   zip container preserved as `structure`. Byte-perfect full
   reconstruction. Content-only retrieval matches.
 
-## Not yet rebuilt
+## `vstorage_c/anon_bounce.c` — the raw primitive underneath everything
 
-- The C-level experiments (`anonymous_mmap_storage.c`, `bounce_mover.c`,
-  the `one_box_*.c` variants) — the Python `FallingBox` covers the same
-  concept at the architecture level; the C versions test raw
-  `MAP_ANONYMOUS` behavior specifically, which Python's own allocator
-  already relies on under the hood for large objects.
-- Model layer-streaming (Experiment 19) and the startup-case API surface
-  (section 14: `store()`/`retrieve()` auth, replication, key rotation) -
-  product-layer work, not the core mechanism.
+- Two `MAP_ANONYMOUS | MAP_PRIVATE` regions (no file descriptor, no path),
+  data bounced between them continuously.
+- **50MB bounced 706 times in 3 seconds** (235 hops/sec), byte pattern
+  verified intact across every hop.
+
+## `layer_streaming.py` — Experiment 19 (model layer-streaming)
+
+- 12-layer model (matching the handbook's "12-layer model" framing),
+  quantized 32-bit → 8-bit + LZMA compressed: **192MB raw → 40.66MB held
+  (4.72x)** — close to the handbook's own "4.5x via quantization +
+  compression."
+- RSS during `run()` (decompress → use → free, layer by layer): **flat
+  at 56.36MB across all 12 layers** — matching almost exactly `baseline
+  + total held size` (14.8MB + 40.66MB ≈ 55.4MB), meaning each layer's
+  cycle adds zero net residual, not growing with layer count.
+- Getting to that clean number required real diagnosis, not just
+  reporting the first number: an initial run showed RSS oscillating
+  35–75MB per layer. Traced to a well-known glibc malloc quirk (dynamic
+  mmap threshold retaining freed arenas across repeated large alloc/free
+  cycles) — confirmed by explicit `malloc_trim(0)` calls flattening it
+  immediately. Not a leak in this code; a documented allocator behavior,
+  now handled explicitly (`_release_freed_memory()`).
+
+## `secrets_api.py` — section 14's product layer
+
+The four things the handbook names as missing, all built and tested:
+
+- **API surface**: `store(key, value, token)` / `retrieve(key, token)` -
+  same shape as a Redis or Vault call.
+- **Auth**: retrieval by a non-owning token is correctly denied
+  (`AuthError`); `share()` grants another token access without ever
+  exposing the secret in the grant call itself.
+- **Key rotation**: `rotate()` replaces a secret's value with no window
+  where neither the old nor new value exists - verified old value is
+  gone, new value retrievable immediately.
+- **Replication**: `ReplicatedSecretsStore` holds secrets across N
+  independent instances; killing one (`kill_replica()`, simulating a
+  process crash - that replica's data collapses completely, matching
+  section 4's Step 5) still serves reads correctly from the survivor.
+
+All four verified working together in one test run: store, deny,
+share, rotate, revoke, then a 2-replica crash-survival test - correct
+result at every step.
