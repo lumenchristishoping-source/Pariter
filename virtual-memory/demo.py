@@ -7,6 +7,7 @@ this independent rebuild behaves the way the handbook describes.
 import hashlib
 import os
 import sys
+import time
 
 sys.path.insert(0, os.path.dirname(__file__))
 from vstorage.measure import disk_write_bytes, rss_anon_mb
@@ -48,6 +49,8 @@ def main() -> None:
     os.makedirs(tmpdir, exist_ok=True)
     sample_paths = make_sample_files(tmpdir)
     originals = {p: open(p, "rb").read() for p in sample_paths}
+    time.sleep(0.2)  # let any delayed writeback from file creation settle
+    # before the measured region opens - otherwise it bleeds into the count.
 
     io_before = disk_write_bytes()
     rss_before = rss_anon_mb()
