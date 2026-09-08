@@ -59,7 +59,9 @@ import uuid
 from dataclasses import dataclass
 from typing import Dict
 
-from .chunked_secure_box import ChunkedSecureBox, make_process_nondumpable
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+from .chunked_secure_box import NONCE_LEN, ChunkedSecureBox, make_process_nondumpable
 from .distributed_key import DistributedTrustGroup
 from .process_watchdog import ProcessWatchdog
 from .splitter import FromFile, SplitResult, piece_size, split_bytes, split_file
@@ -222,6 +224,40 @@ class SecureVirtualStorage:
         with open(dest_path, "wb") as f:
             box.stream_to(f.write)
 
+    def retrieve_to_encrypted_file(self, file_id: str, dest_path: str,
+                                    transit_key: bytes | None = None,
+                                    which: Piece | str = "full") -> bytes:
+        """The actual "encrypt the path" version the user asked for,
+        not just "write plaintext somewhere hopefully safe": streams
+        the file out the same chunk-at-a-time way as retrieve_to_file,
+        but every byte written to dest_path is ciphertext under
+        transit_key - decrypted from storage and immediately
+        re-encrypted, never handed to the destination in the open.
+
+        transit_key is generated fresh (real AES-256) if not given,
+        and returned either way - the caller (or whoever they hand
+        dest_path to) needs it to read the file back via
+        decrypt_wrapped_file(). Pass your own key if the destination
+        is a specific other party who should be the only one able to
+        open it.
+
+        Same honest scope as retrieve_to_file(): the plaintext still
+        exists for one chunk, one instant, inside this call - that's
+        unavoidable, decrypting from storage is what makes the data
+        real in the first place. What this actually buys you: nothing
+        written to dest_path, or visible to anything reading dest_path
+        off disk or off the wire, is ever plaintext - only someone
+        holding transit_key can ever get it back."""
+        held = self._held[file_id]
+        if which == "full":
+            which = held.reconstruct_from
+        box = held.boxes[which]
+        if transit_key is None:
+            transit_key = AESGCM.generate_key(bit_length=256)
+        with open(dest_path, "wb") as f:
+            box.stream_to_wrapped(f.write, transit_key)
+        return transit_key
+
     def original_size_bytes(self, file_id: str) -> int:
         return self._held[file_id].original_size
 
@@ -244,3 +280,22 @@ class SecureVirtualStorage:
             self._watchdog.stop()
         if self._trust_group:
             self._trust_group.stop()
+
+
+def decrypt_wrapped_file(path: str, transit_key: bytes, dest_path: str) -> None:
+    """Reads back a file written by retrieve_to_encrypted_file() -
+    whoever's on the receiving end of the encrypted path calls this
+    (with the transit_key they were given out of band) to get the
+    real plaintext. Streams both directions, same as everything else
+    here: reads one wrapped chunk at a time, decrypts it, writes it
+    straight to dest_path, never holds the whole file either way."""
+    with open(path, "rb") as src, open(dest_path, "wb") as dst:
+        while True:
+            length_bytes = src.read(4)
+            if not length_bytes:
+                break
+            ct_len = int.from_bytes(length_bytes, "big")
+            nonce = src.read(NONCE_LEN)
+            ct = src.read(ct_len)
+            plaintext = AESGCM(transit_key).decrypt(nonce, ct, None)
+            dst.write(plaintext)

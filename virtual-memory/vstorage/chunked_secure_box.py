@@ -415,6 +415,46 @@ class ChunkedSecureBox:
         finally:
             self._paused.clear()
 
+    def stream_to_wrapped(self, write, transit_key: bytes) -> None:
+        """The actual "encrypt the path" version: same one-chunk-at-a-
+        time bound as stream_to(), but `write` NEVER sees raw
+        plaintext. Each chunk is decrypted under this box's own
+        storage key, then IMMEDIATELY re-encrypted under
+        `transit_key` (a fresh nonce per chunk, real AES-GCM) before
+        `write` is called - the bytes that actually leave this
+        function, cross into the caller's write target, and land on
+        whatever destination it is are ciphertext the whole way, not
+        plaintext trusted to a "hopefully protected" destination.
+        Plaintext still exists for one chunk's worth, for one
+        instant, inside this loop - that part is unavoidable, the
+        storage-layer decrypt has to happen for the data to be
+        useful to anyone - but it never reaches `write`, never
+        touches the destination, and is gone the moment the loop
+        moves to the next chunk.
+
+        Wire format per chunk: 4-byte big-endian ciphertext length,
+        then NONCE_LEN-byte nonce, then the ciphertext - self-
+        delimiting so a reader can pull chunks back out without
+        needing to know chunk_size in advance."""
+        self._paused.set()
+        remaining = self._data_len
+        try:
+            with self._lock:
+                current_key = self._current_guard.reconstruct()
+                next_key = self._next_guard.reconstruct()
+                for chunk, on_next in zip(self._chunks, self._on_next):
+                    if remaining <= 0:
+                        break
+                    key = next_key if on_next else current_key
+                    plaintext = chunk.decrypt(key)
+                    piece = plaintext[:min(chunk.plain_len, remaining)]
+                    nonce = os.urandom(NONCE_LEN)
+                    ct = AESGCM(transit_key).encrypt(nonce, piece, None)
+                    write(len(ct).to_bytes(4, "big") + nonce + ct)
+                    remaining -= len(piece)
+        finally:
+            self._paused.clear()
+
     def collapse(self) -> None:
         with self._lock:
             self._removed = True
