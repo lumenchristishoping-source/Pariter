@@ -54,10 +54,12 @@ Honest, tested scope and limits:
 from __future__ import annotations
 
 import os
+import secrets
 import threading
+import time
 import uuid
 from dataclasses import dataclass
-from typing import Dict
+from typing import Dict, Optional
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
@@ -67,6 +69,22 @@ from .process_watchdog import ProcessWatchdog
 from .splitter import FromFile, SplitResult, piece_size, split_bytes, split_file
 
 Piece = str
+
+DEFAULT_TOKEN_TTL = 60.0  # seconds - "hostile" tier's key-redemption window
+
+
+@dataclass
+class RetrievalReceipt:
+    """What retrieve_to_destination() hands back - shape depends on
+    trust: "trusted" gets neither (nothing to hand over, dest_path IS
+    the readable file); "untrusted" gets the real key, released only
+    after confirmed durable departure; "hostile" gets a redeemable
+    token instead of the key itself."""
+    dest_path: str
+    trust: str
+    key: Optional[bytes] = None
+    token: Optional[str] = None
+    expires_at: Optional[float] = None
 
 
 @dataclass
@@ -99,6 +117,8 @@ class SecureVirtualStorage:
         self._trust_group = None
         if use_distributed_trust:
             self._trust_group = DistributedTrustGroup(k=trust_k, n=trust_n)
+        self._pending_keys: Dict[str, dict] = {}
+        self._key_lock = threading.Lock()
 
     # -- save --------------------------------------------------------
 
@@ -257,6 +277,104 @@ class SecureVirtualStorage:
         with open(dest_path, "wb") as f:
             box.stream_to_wrapped(f.write, transit_key)
         return transit_key
+
+    def retrieve_to_destination(self, file_id: str, dest_path: str, trust: str = "trusted",
+                                 which: Piece | str = "full",
+                                 token_ttl: float = DEFAULT_TOKEN_TTL) -> RetrievalReceipt:
+        """Picks the actual output strategy from how much you trust
+        dest_path, instead of making the caller choose the raw method
+        by hand. Both ideas discussed with the user exist here as
+        real, distinct tiers rather than one being "the" answer:
+
+          "trusted"   - plain streaming (stream_to()). Fastest, no
+                        wrapping. Assumes dest_path is already
+                        protected on its own (an encrypted volume, a
+                        destination you control) - same as
+                        retrieve_to_file().
+
+          "untrusted" - wrapped streaming (stream_to_wrapped()) AND
+                        the key is only released after the encrypted
+                        bytes are CONFIRMED durably written - a real
+                        os.fsync(), not just "the write() calls
+                        returned". Don't hand out the means to read
+                        the file until the file has genuinely,
+                        durably left. (The user's idea.)
+
+          "hostile"   - everything "untrusted" does, PLUS the key
+                        itself is never handed back directly: you get
+                        a single-use, time-boxed token instead, and
+                        redeem_key(token) is a separate call that only
+                        works once, within token_ttl seconds of this
+                        call. For a destination you don't trust at
+                        all, or don't even know yet. (Layers the
+                        token/expiry idea on top of the confirmed-
+                        departure gate, rather than replacing it.)
+
+        Honest limit that applies to all three, stated plainly: once
+        a key or token is redeemed and leaves this process (returned
+        to the caller), this process can no longer reach it - see the
+        HANDBOOK.md "death" guarantee, which is about what's INSIDE
+        this process, not about copies a caller already has."""
+        if trust == "trusted":
+            self.retrieve_to_file(file_id, dest_path, which=which)
+            return RetrievalReceipt(dest_path=dest_path, trust=trust)
+
+        if trust not in ("untrusted", "hostile"):
+            raise ValueError(f"unknown trust level: {trust!r} (use 'trusted', "
+                              f"'untrusted', or 'hostile')")
+
+        held = self._held[file_id]
+        if which == "full":
+            which = held.reconstruct_from
+        box = held.boxes[which]
+        transit_key = AESGCM.generate_key(bit_length=256)
+        with open(dest_path, "wb") as f:
+            box.stream_to_wrapped(f.write, transit_key)
+            f.flush()
+            os.fsync(f.fileno())  # confirmed durable departure - THEN the key may be released
+
+        if trust == "untrusted":
+            return RetrievalReceipt(dest_path=dest_path, trust=trust, key=transit_key)
+
+        # "hostile": hold the key back, issue a single-use, expiring token instead.
+        token = secrets.token_urlsafe(32)
+        expires_at = time.time() + token_ttl
+        with self._key_lock:
+            self._sweep_expired_tokens_locked()
+            self._pending_keys[token] = {"key": transit_key, "expires_at": expires_at}
+        return RetrievalReceipt(dest_path=dest_path, trust=trust, token=token,
+                                 expires_at=expires_at)
+
+    def redeem_key(self, token: str) -> bytes:
+        """Redeems a "hostile"-tier token for the real transit key -
+        single-use (deleted the instant this succeeds) and time-boxed
+        (fails once token_ttl has passed, even if never redeemed).
+        Raises KeyError for an unknown/never-issued/already-redeemed
+        token, TimeoutError for a real but expired one - checked
+        directly against this specific token's own deadline, not via
+        the general sweep (which runs only at issuance, to bound
+        growth from tokens nobody ever redeems - doing it here too
+        raced this exact check, deleting an expired entry before its
+        own expiry could be distinguished from "never existed")."""
+        with self._key_lock:
+            entry = self._pending_keys.get(token)
+            if entry is None:
+                raise KeyError("unknown token: never issued or already redeemed")
+            if time.time() > entry["expires_at"]:
+                del self._pending_keys[token]
+                raise TimeoutError("token expired")
+            del self._pending_keys[token]
+            return entry["key"]
+
+    def _sweep_expired_tokens_locked(self) -> None:
+        """Caller must hold self._key_lock. Drops expired, never-
+        redeemed tokens so a long-running process holding many
+        "hostile"-tier keys that were never picked up doesn't
+        accumulate them forever."""
+        now = time.time()
+        expired = [t for t, e in self._pending_keys.items() if e["expires_at"] < now]
+        for t in expired:
+            del self._pending_keys[t]
 
     def original_size_bytes(self, file_id: str) -> int:
         return self._held[file_id].original_size
