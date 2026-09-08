@@ -121,23 +121,60 @@ class SecureVirtualStorage:
         return ChunkedSecureBox(piece, trust_group=self._trust_group,
                                  on_new_guard=on_new_guard)
 
+    def _rotation_registrar(self):
+        """Builds a per-box on_new_guard callback that keeps the
+        watchdog's registration O(1) per box, no matter how many times
+        that box's key rotates.
+
+        Real gap found and fixed: the watchdog used to only ever learn
+        a box's key-guard addresses ONCE, at save time. Every later key
+        rotation replaces those cells with a fresh mmap allocation at a
+        fresh address the watchdog never heard about - so after the
+        first rotation, it was watching stale, freed (and often
+        silently reused) memory instead of the actual current key.
+
+        The first fix for that (add_regions on every rotation) created
+        a SECOND real bug, found the same way - running the actual
+        multi-file test, not by inspection: every rotation registered
+        a BRAND NEW block of addresses and nothing ever removed the
+        old one, so the table grows without bound. A single small
+        file's metadata piece (usually just 1 chunk, so it rotates on
+        EVERY hop) burned through all 200,000 slots within a few
+        minutes under the scheduler pool's much higher throughput,
+        crashing save() outright.
+
+        Fixed by reserving ONE fixed slot per box (on its first
+        rotation) and overwriting that same slot every time after -
+        same live addresses always covered, registration cost bounded
+        regardless of rotation count."""
+        if not self._watchdog:
+            return None
+        watchdog = self._watchdog
+        slot = {"index": None, "size": None}
+
+        def _on_new_guard(regions: list) -> None:
+            if slot["index"] is None:
+                slot["index"] = watchdog.reserve_slot(len(regions))
+                slot["size"] = len(regions)
+            if slot["index"] != -1 and len(regions) == slot["size"]:
+                watchdog.update_slot(slot["index"], regions)
+            # else: table full, or an unexpected size change - skip
+            # rather than crash; this box's rotation still succeeds,
+            # just without watchdog coverage for that one instant.
+
+        return _on_new_guard
+
     def _hold(self, result: SplitResult, name: str) -> str:
         file_id = uuid.uuid4().hex
-        # Real gap found and fixed: the watchdog used to only ever
-        # learn a box's key-guard addresses ONCE, at save time. Every
-        # later key rotation replaces those cells with a fresh mmap
-        # allocation at a fresh address that the watchdog never heard
-        # about - so after the first rotation, it was watching stale,
-        # freed (and often silently reused) memory instead of the
-        # actual current key. on_new_guard wires every rotation's new
-        # addresses straight to the live watchdog, same as the
-        # original one-time registration below.
-        on_new_guard = self._watchdog.add_regions if self._watchdog else None
+        # Each piece rotates its own, independent guard - each needs
+        # its OWN registrar (its own reserved slot). Sharing one
+        # between pieces would let one piece's rotation silently
+        # overwrite another piece's watched addresses.
         boxes = {
-            "content": self._make_box(result.content, on_new_guard),
-            "structure": self._make_box(result.structure, on_new_guard),
+            "content": self._make_box(result.content, self._rotation_registrar()),
+            "structure": self._make_box(result.structure, self._rotation_registrar()),
             "metadata": ChunkedSecureBox(result.metadata, trust_group=self._trust_group,
-                                          on_new_guard=on_new_guard),
+                                          on_new_guard=self._rotation_registrar()),
         }
         if self._watchdog:
             regions = []

@@ -132,6 +132,38 @@ class ProcessWatchdog:
                 self._regions[(i + j) * 2 + 1] = length
             self._region_count.value = i + len(regions)
 
+    def reserve_slot(self, count: int) -> int:
+        """Reserves `count` contiguous region slots ONCE, returning the
+        starting index, or -1 if the table is full. For addresses that
+        get REPLACED repeatedly (a box's rotating key guard - see
+        chunked_secure_box.py) rather than grown forever: real bug
+        found running a real multi-file test, not theorized - every
+        key rotation used to call add_regions() again for the new
+        guard, and nothing ever removed the OLD guard's now-stale
+        entry. With the scheduler pool servicing files fast, a single
+        small file's metadata piece (which rotates on EVERY hop, since
+        it's usually just one chunk) burned through all 200,000 slots
+        within a few minutes of real use, crashing save(). Reserving
+        one fixed slot per box and overwriting it in place (see
+        update_slot) keeps registration O(1) per box regardless of how
+        many times it rotates."""
+        with self._region_count.get_lock():
+            i = self._region_count.value
+            if i + count > self.MAX_REGIONS:
+                return -1
+            self._region_count.value = i + count
+        return i
+
+    def update_slot(self, start_index: int, regions: list) -> None:
+        """Overwrites a previously-reserved slot's addresses in place -
+        does NOT grow the table. `regions` must be the same length the
+        slot was reserved with."""
+        if start_index < 0:
+            return
+        for j, (addr, length) in enumerate(regions):
+            self._regions[(start_index + j) * 2] = addr
+            self._regions[(start_index + j) * 2 + 1] = length
+
     @property
     def triggered(self) -> bool:
         return bool(self._detected_flag.value)
