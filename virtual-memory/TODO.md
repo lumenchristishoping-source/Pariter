@@ -34,34 +34,75 @@ Tracking what's next so nothing gets lost between sessions.
       same 24-file test after the fix: 3 threads, save 2.7x faster,
       full retrieval 9-10x faster per file, still 100% byte-perfect.
       See `REBUILD_STATUS.md`.
+- [x] **Fall-scheduler throughput under heavy concurrent load** —
+      the single-thread version above could be starved completely
+      (measured: 29 of 75 boxes got 0 hops during a 75s window
+      dominated by one heavy operation). Fixed with a small pool (4)
+      of fall-scheduler workers, plus the same fix applied to the key
+      -cell scheduler for the identical risk. Reproduced the exact
+      failure directly and confirmed the fix: 0 of 30 boxes stalled
+      across a 46.5s busy window, hop counts landing in a tight
+      107-110 range. See `REBUILD_STATUS.md`.
+- [x] **Watchdog stale-address gap** — the watchdog only ever learned
+      a box's key-guard addresses ONCE, at save time; every later
+      rotation replaced those cells at a fresh address the watchdog
+      never heard about. Confirmed directly: attacking after several
+      rotations left the CURRENT key fully readable 2000ms later on
+      the old code. Fixed with an `on_new_guard` hook wired to the
+      live watchdog on every rotation - re-verified the same attack:
+      wiped in 5.7-9.3ms across 3 runs.
+- [x] **Watchdog region-table growth** — the fix above then grew the
+      watchdog's region table without bound (every rotation added a
+      new block, nothing ever removed the old one), crashing save()
+      with "region table full" after just 9 files in real use. Fixed
+      with `reserve_slot()`/`update_slot()` - each box's rotating
+      guard gets ONE fixed slot, overwritten in place forever after,
+      instead of growing per rotation. Verified: region count stays
+      flat as hop count climbs; post-rotation attack still wiped in
+      2.3-3.6ms.
+- [x] **Stream disk → storage all the way through the real front
+      door** — `splitter.py`'s `split_file()` used to read a whole
+      file into RAM before anything else could happen, meaning
+      `save()` needed roughly a file's own size in RAM just to start,
+      even though `ChunkedSecureBox.from_file()` could hold it
+      cheaply afterward. Fixed with a `FromFile` marker: content/
+      structure pieces that mirror the source file now stream
+      straight from disk via `from_file()` instead of being
+      materialized first. Verified on a real 5GB file through the
+      actual `save()` call: ~195MB peak, not ~5GB. All 7 file-type
+      branches (md, txt, json, csv, geojson, pdf, docx, zip) still
+      byte-perfect.
+- [x] **Streaming output** — `retrieve()` had the same problem in
+      reverse: it built the whole reconstructed file as one object
+      before returning it. `ChunkedSecureBox.stream_to()` +
+      `SecureVirtualStorage.retrieve_to_file()` decrypt one chunk at
+      a time straight to a destination file instead. Verified on the
+      same 3GB file: RAM moved from 91.7MB (holding it) to only
+      93.8MB while streaming the ENTIRE file back out - not a multi-
+      GB spike. Byte-perfect. Honest scope, discussed with the user
+      before building: this bounds exposure, it doesn't eliminate it
+      - retrieving a file always makes it usable somewhere, for any
+      encryption-at-rest system. The real win is shrinking what's
+      ever exposed at once down to one chunk, briefly, rather than
+      the whole file for as long as it's held.
 
 ## Not yet done
 
-- [ ] **Fall-scheduler throughput under heavy concurrent load.** The
-      shared-scheduler fix traded background key-rotation resilience
-      for foreground speed: with only ONE fall-scheduler thread, a
-      sustained heavy save/retrieve on the main thread can starve it
-      completely (measured: 29 of 75 boxes got 0 hops during a 75s
-      window dominated by one heavy operation). Before the fix, many
-      separate threads meant a busy main thread couldn't starve all
-      of them at once. Next step to try: a small pool (3-4) of
-      fall-scheduler worker threads instead of exactly one - keeps
-      thread count far below the old per-box count while giving
-      rotation some real headroom against a busy main thread.
-
-- [ ] Wire `ChunkedSecureBox` (large-file support) into
-      `secure_system.py` as the default for big payloads - tested
-      separately and works, just not connected to the main pipeline
-      yet.
-- [ ] **Stream disk → storage all the way through the real front
-      door.** `from_file()` proves the underlying box can ingest a
-      huge file cheaply, but `SecureVirtualStorage.save()` still
-      goes through `splitter.py`'s `split_file()`, which does a full
-      `open(path).read()` first. For plain content-is-the-file types
-      (`.md`, `.json`, `.log`, `.csv`, `.txt`) this is a real,
-      scoped fix - route straight to `from_file()`, skipping the
-      full read. For `.pdf`/`.docx` the text-extraction step itself
-      needs the whole file, so that path stays bounded by the
-      parser library regardless.
+- [ ] **Wrap-for-transit output path.** Discussed, not yet built: an
+      option for `retrieve_to_file()`/a future `retrieve_stream()` to
+      re-encrypt each chunk under a caller-supplied destination key
+      as it streams out, instead of writing raw plaintext - useful
+      specifically when the output is being handed off to another
+      secured system (upload, forward to another service) and this
+      process never needs the plaintext at all. Explicitly does NOT
+      help the ordinary case where the caller in this same process
+      wants to actually read/use the file - that case still needs
+      real plaintext to exist somewhere, same as any system.
+- [ ] PDF/DOCX text extraction still needs to open and parse the
+      whole file (pypdf/zipfile) - the structure piece streams fine,
+      but content extraction for those two types isn't RAM-bounded
+      the same way text-like files now are. Not investigated further
+      yet; likely bounded by what the parser libraries themselves do
+      internally.
 
 Update this list as items are explained, built, and verified.

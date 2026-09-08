@@ -347,3 +347,113 @@ background rotation resilience under heavy concurrent load. Next step
 under consideration: a small pool (3-4) of fall-scheduler threads
 instead of exactly one, to recover rotation throughput without
 bringing back the full per-box thread count.
+
+### Closing the gaps found above: scheduler pool, watchdog fixes, and full streaming both ways
+
+Four more real bugs found and fixed in direct succession, each caught
+by actually running the system at scale rather than by inspection -
+same discipline as everything above.
+
+**1. Fall-scheduler starvation, reproduced and fixed.** Built a direct
+repro of the 29/75-stalled scenario: 30 boxes falling, main thread
+busy for 46.5s on one heavy operation. Confirmed the failure on the
+single-thread scheduler, then fixed both `_GlobalFallScheduler` and
+`_GlobalCellScheduler` (the identical risk existed there too) with a
+small worker pool (4 each) instead of exactly one thread. Same repro
+after the fix: **0 of 30 boxes stalled**, hops landing in a tight
+107-110 range across all of them. Both pools also gained per-item
+exception handling - a live tamper response can make a box's own hop
+fail mid-flight, and with only a handful of shared threads now
+servicing every box in the process, one uncaught exception would have
+silently stopped falling motion for every other file too.
+
+**2. The watchdog was watching stale addresses after every rotation.**
+Found while re-testing fix #1: `SecureVirtualStorage` registered a
+box's key-guard addresses with the watchdog exactly once, at save
+time. Every later key rotation replaces those cells with a fresh mmap
+allocation the watchdog never heard about. Proven directly: attacking
+deliberately AFTER several rotations left the CURRENT key readable
+2000ms later on the unfixed code - not because the watchdog failed,
+but because it was zeroing an address that had since been silently
+reused for unrelated live memory. Fixed with an `on_new_guard` hook,
+called on every rotation, wired straight to the live watchdog. Same
+attack, re-run 3x on the fixed code: wiped in **5.7-9.3ms**, every
+time.
+
+**3. That fix then grew the watchdog's region table without bound.**
+Running the real 10-file test (not a synthetic one) crashed save()
+outright: `RuntimeError: ProcessWatchdog region table full`, after
+just 9 files (~279MB). Root cause: fix #2 registered a BRAND NEW block
+of addresses on every rotation and never removed the old one - a
+single small file's metadata piece (usually 1 chunk, so it rotates on
+EVERY hop) burned through all 200,000 slots within minutes under the
+scheduler pool's much higher throughput. Fixed properly, not by
+raising the ceiling: `ProcessWatchdog.reserve_slot()`/`update_slot()`
+give each box's rotating guard ONE fixed slot, overwritten in place
+forever after instead of growing. A second bug caught before shipping
+this fix: an early version shared one registrar closure across all 3
+pieces of a file, which would have let one piece's rotation silently
+overwrite another piece's watched addresses - each piece now gets its
+own independent slot. Verified: watchdog region count stayed flat at
+1587 as a box's hop count climbed from 8 to 13 over 4 seconds of real
+rotation; the post-rotation attack (fix #2's proof) still wiped the
+current key in 2.3-3.6ms across 3 more runs.
+
+**4. Streaming, both directions, through the real front door.** The
+12GB test proved `ChunkedSecureBox.from_file()` could ingest a huge
+file cheaply, but only `splitter.py`'s `split_file()` - the ACTUAL
+`save()` entry point - still did `open(path).read()` first, needing
+roughly a file's own size in RAM just to start. Fixed with a
+`FromFile` marker: text-like content and the structure piece of every
+type now stream straight from disk instead of being materialized.
+Verified on a real 5GB file through the real `save()` call: **~195MB
+peak** (not ~5GB), all 7 file-type branches still byte-perfect.
+`retrieve()` had the identical problem in reverse - building the whole
+reconstructed file as one object before returning it. Added
+`ChunkedSecureBox.stream_to()` / `SecureVirtualStorage.
+retrieve_to_file()`: decrypt one chunk, write it straight to a
+destination file, discard, repeat. Verified on the same file, scaled
+to 3GB: RAM went from 91.7MB (holding it) to 93.8MB while streaming
+the ENTIRE 3GB back out - a 2.1MB delta to retrieve the whole file,
+not a multi-GB spike. Byte-perfect (full SHA-256 match, source vs.
+retrieved copy).
+
+Honest scope on the streaming-output piece, discussed with the user
+before building it: this bounds exposure, it does not eliminate it -
+retrieving a file always means it becomes usable somewhere, true of
+any encryption-at-rest system, not a gap specific to this one. The
+real win is shrinking what's ever exposed in the open at once from
+"the whole file, for as long as the caller holds it" down to "one
+chunk, briefly" - and it fully eliminates local exposure specifically
+when the destination the caller streams into is itself already
+protected (an encrypted volume, a secured upload target).
+
+### The attacker-found-it investigation - not a regression, a test bug
+
+The 10-file post-fix run's external attacker found all 3 planted
+markers (`any_marker_found: true`), where the earlier 24-file run had
+found none. Investigated properly rather than assumed either way:
+
+- Two isolated repros (a single marked file scanned immediately after
+  save, and 7 files saved sequentially with no retrieval at all)
+  both found nothing - ruled out ingestion-time or multi-file-
+  sequential residue as the cause.
+- Traced the real explanation directly: located the exact memory
+  address of a legitimately-retrieved file's plaintext, confirmed it
+  lived in a normal `[heap]` mapping, and read it successfully three
+  separate ways (address lookup, direct read, self-scan) - the
+  plaintext genuinely is there, exactly as documented
+  (`HANDBOOK.md`: "forms full-size at the exact instant a task needs
+  it"). Cross-checked against the real run's own event timestamps:
+  the attacker's scan window did overlap the test's own retrieval of
+  the marked files.
+- Along the way, found and fixed a real bug in the diagnostic
+  scripts themselves (not the storage system): using the same
+  placeholder filename for multiple markers in a test's `_markers.json`
+  caused a dict-key collision that silently discarded the real marker,
+  producing false "not found" results in three earlier isolated tests.
+
+Conclusion: not a regression. The 0%-detection claim was always
+specifically about data *at rest*; this confirms, correctly, that
+data actively being retrieved is real plaintext in memory, which no
+encryption-at-rest system can avoid.
