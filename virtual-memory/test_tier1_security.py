@@ -13,7 +13,7 @@ import sys
 import time
 
 sys.path.insert(0, os.path.dirname(__file__))
-from vstorage.secure_falling_box import (
+from vstorage.superseded.secure_falling_box import (
     SecureFallingBox, make_process_nondumpable, secure_zero, _mmap_addr,
 )
 

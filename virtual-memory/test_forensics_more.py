@@ -24,8 +24,8 @@ import time
 
 sys.path.insert(0, os.path.dirname(__file__))
 from vstorage.falling_box import FallingBox
-from vstorage.nbox_falling import NFallingBox
-from vstorage.zeroing_falling import ZeroingFallingBox
+from vstorage.superseded.nbox_falling import NFallingBox
+from vstorage.superseded.zeroing_falling import ZeroingFallingBox
 
 MARKER = b"VSTORAGE_SECRET_MARKER_" + os.urandom(8).hex().encode()
 PAD_BEFORE = os.urandom(300)

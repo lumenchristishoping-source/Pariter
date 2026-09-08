@@ -59,8 +59,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Dict
 
-from .chunked_secure_box import ChunkedSecureBox
-from .combined_secure_box import make_process_nondumpable
+from .chunked_secure_box import ChunkedSecureBox, make_process_nondumpable
 from .distributed_key import DistributedTrustGroup
 from .process_watchdog import ProcessWatchdog
 from .splitter import SplitResult, split_bytes, split_file

@@ -12,7 +12,7 @@ import sys
 import time
 
 sys.path.insert(0, os.path.dirname(__file__))
-from vstorage.encrypted_falling_box import EncryptedFallingBox, _mmap_addr
+from vstorage.superseded.encrypted_falling_box import EncryptedFallingBox, _mmap_addr
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 

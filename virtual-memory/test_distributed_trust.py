@@ -11,7 +11,7 @@ import sys
 import time
 
 sys.path.insert(0, os.path.dirname(__file__))
-from vstorage.combined_secure_box import CombinedSecureBox
+from vstorage.superseded.combined_secure_box import CombinedSecureBox
 from vstorage.distributed_key import DistributedTrustGroup
 from vstorage.secure_system import SecureVirtualStorage
 

@@ -26,7 +26,7 @@ import gc
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-from .split_key_guard import SplitKeyGuard, _lock_and_hide
+from ..split_key_guard import SplitKeyGuard, _lock_and_hide
 
 _libc = ctypes.CDLL("libc.so.6", use_errno=True)
 PR_SET_DUMPABLE = 4

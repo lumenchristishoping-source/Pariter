@@ -10,7 +10,7 @@ import threading
 import time
 
 sys.path.insert(0, os.path.dirname(__file__))
-from vstorage.combined_secure_box import (
+from vstorage.superseded.combined_secure_box import (
     CombinedSecureBox, make_process_nondumpable, _mmap_addr,
 )
 from vstorage.measure_full import full_snapshot
