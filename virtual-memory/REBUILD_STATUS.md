@@ -93,3 +93,125 @@ The four things the handbook names as missing, all built and tested:
 All four verified working together in one test run: store, deny,
 share, rotate, revoke, then a 2-replica crash-survival test - correct
 result at every step.
+
+---
+
+## Security hardening arc — full walkthrough in `ARCHITECTURE.md`
+
+Everything below has its own test file in this directory; the numbers
+here are the headline results. Read `ARCHITECTURE.md` for the
+step-by-step "how it works" version.
+
+### Forensics testing (`test_forensics_motion.py`, `test_forensics_more.py`)
+
+- Plain falling motion (2 buffers, no encryption): **100% detection**
+  across 3 real attack models (full dump, fixed-address monitor, slow
+  chunked acquisition) - motion alone is not security, proven not
+  assumed.
+- Scaling to 64 hiding spots: still 100% detected, and for a worse
+  reason than expected - nothing ever gets erased, so every spot ever
+  visited keeps a live copy forever.
+
+### Tier 1 — OS hardening (`secure_falling_box.py`, `test_tier1_security.py`)
+
+- `mlock()`, `MADV_DONTDUMP`, `PR_SET_DUMPABLE(0)` - all verified from
+  `/proc`, not trusted from return codes alone.
+- 2 real bugs found and fixed: `MADV_DONTDUMP` needs page-aligned
+  memory (a `bytearray` isn't; switched to `mmap`), and `snapshot()`
+  returned immutable `bytes` (couldn't be zeroed by a caller; now
+  `bytearray` everywhere).
+
+### Tier 2 — real encryption (`encrypted_falling_box.py`, `test_tier2_encryption.py`)
+
+- Same 3 forensics attacks, rerun against AES-GCM ciphertext ratcheted
+  every hop: **0% detection**, all three.
+- Forward secrecy checked directly: an old ciphertext snapshot fails
+  to decrypt under the current (ratcheted-forward) key.
+- One buffer instead of two ("falls between nothing and nothing") -
+  works, and removes the "two live copies at once" risk entirely.
+
+### Split key (`split_key_guard.py`)
+
+- AES key compressed (32B → 88B - real keys don't compress, verified)
+  and split byte-by-byte across 88 independently-timed, separately
+  locked cells.
+- Reconstruction with 87 of 88 correct bytes: fails outright (LZMA
+  error) - a genuine "need all pieces" property, unlike duplicated
+  falling boxes.
+- 88 threads → 1 shared scheduler thread: fixed a real RAM/CPU cost
+  found under real combined load, with no loss of the security
+  property (still 88 separate locked addresses).
+
+### Real-world costs found and fixed
+
+- 50MB payload, whole-buffer ratchet: hop rate collapsed to 1 per 2s,
+  RAM +332MB. Fixed with adaptive pacing (hop rate) and chunking
+  (`chunked_secure_box.py`, RAM down to +52MB, bounded over 10s/7,593
+  hops).
+- A ~65MB RAM ceiling traced to the `cryptography` library's own
+  internal per-thread memory pool (only appears when AES-GCM runs on
+  a background thread) - confirmed bounded, not a leak.
+
+### Tamper detection (`tamper_watchdog.py` → `process_watchdog.py`)
+
+- Thread-based watchdog: wins a race in isolation (~50-70us) but loses
+  badly (~63-90ms) once real background threads compete for the GIL -
+  reproduced deliberately with 7 dummy busy threads to confirm the
+  cause.
+- Process-based watchdog: reaches into the target's memory directly
+  (`/proc/<pid>/mem` write, no `ptrace_attach` needed) instead of
+  asking the target to react. Retested under the same busy-GIL
+  conditions: 97-520us, wins every trial.
+- Wired into `secure_system.py`: every held file's key cells and data
+  buffers registered with one shared watchdog. Verified against a real
+  attack from OUTSIDE the target (the target's own main thread freezes
+  the instant `ptrace_attach` lands via its own `SIGSTOP`, so it can
+  never confirm anything about itself) - real key material before,
+  all zero after.
+- **Honest, unfixed limit**: `TracerPid` (what any such watchdog
+  watches) never changes if the reader skips `ptrace_attach` entirely
+  - confirmed a root reader can open and read `/proc/<pid>/mem`
+  directly with no attach call and no detectable signal at all. Not a
+  speed problem - nothing to catch.
+
+### SELinux/AppArmor investigated, real dead end here
+
+- Checked before attempting anything: no LSM present in this sandbox
+  at all (`/sys/kernel/security/lsm` doesn't exist, no AppArmor
+  module, empty SELinux pseudo-fs, capability set nearly full). Not a
+  theoretical dead end - confirmed for this specific environment.
+
+### Distributed trust (`shamir.py`, `distributed_key.py`, `test_shamir_secret_sharing.py`, `test_distributed_trust.py`)
+
+- Real Shamir's Secret Sharing from scratch (GF(256), no library
+  available). Found and fixed a real bug in the field arithmetic
+  first: the log/exp tables were generated assuming 2 is a primitive
+  element - verified it isn't (order 51, not 255); fixed using 3
+  (verified primitive).
+- Security property proven, not assumed: with k-1 shares, all 256
+  possible values for a secret byte are equally consistent (256/256) -
+  provably zero information, not "hard to guess."
+- Real processes: 5 separate OS processes, one share each. Fully
+  compromising 2 of them (root, direct memory read, no attach - same
+  attack that beat everything else) yields garbage; legitimate 3-of-5
+  reconstruction works.
+- Wired into `CombinedSecureBox`'s ratchet as `trust_group=`, exposed
+  on `SecureVirtualStorage(use_distributed_trust=True)`.
+- Closed a real gap found while building this: the old local-only
+  ratchet is a deterministic hash chain, so a key captured once
+  predicts every FUTURE key too (verified: hashed forward 5 times
+  locally, matched the real key exactly). With distributed trust on,
+  that same prediction fails - proven side by side, same test.
+- Real cost: hop rate roughly halves (18/sec vs 30-45/sec) - the price
+  of live round-trips instead of local math.
+
+### The unified pipeline (`secure_system.py`, `test_secure_pipeline_e2e.py`)
+
+- `SecureVirtualStorage`: same `save()`/`retrieve()`/`forget()`/
+  `collapse_all()` shape as the original, every piece hardened by
+  everything above, one shared `ProcessWatchdog` for the whole system.
+- Tested end-to-end on a real 49-page PDF: byte-perfect, PDF re-opens
+  and reads correctly, real attack detected and wiped, verified
+  externally.
+- Not yet wired in: `ChunkedSecureBox` for large files (tested
+  separately, works, just not the default path yet).

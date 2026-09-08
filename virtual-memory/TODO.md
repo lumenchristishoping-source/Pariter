@@ -11,5 +11,20 @@ Tracking what's next so nothing gets lost between sessions.
       files (JSON, Python, prose, GeoJSON map, PDF, DOCX) held and
       falling at the same time (18 boxes at once). All 6 byte-perfect,
       nothing crossed between files.
+- [x] **Security hardening** — full arc, see `ARCHITECTURE.md`: proved
+      plain motion isn't security, built real encryption + OS
+      hardening + a process-based attack watchdog + Shamir-based
+      distributed trust, wired into one pipeline (`secure_system.py`).
+      Honest remaining gap documented, not hidden: a root reader that
+      skips `ptrace_attach` is undetectable from inside the process -
+      no code fix exists for that; distributed trust is the real
+      answer (no single machine ever holds the whole secret).
+
+## Not yet done
+
+- [ ] Wire `ChunkedSecureBox` (large-file support) into
+      `secure_system.py` as the default for big payloads - tested
+      separately and works, just not connected to the main pipeline
+      yet.
 
 Update this list as items are explained, built, and verified.
