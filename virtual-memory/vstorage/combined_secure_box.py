@@ -22,6 +22,8 @@ import mmap
 import os
 import threading
 
+import gc
+
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from .split_key_guard import SplitKeyGuard, _lock_and_hide
@@ -30,6 +32,22 @@ _libc = ctypes.CDLL("libc.so.6", use_errno=True)
 PR_SET_DUMPABLE = 4
 PAGE_SIZE = mmap.PAGESIZE
 NONCE_LEN = 12
+TRIM_EVERY_N_HOPS = 20
+
+
+def _release_freed_memory() -> None:
+    """Every hop creates fresh AESGCM/lzma objects - real, short-lived
+    garbage. glibc doesn't hand freed heap memory back to the OS on its
+    own (confirmed the same way earlier in this project: 1 second of
+    hopping grew RssAnon by 68MB, and a single malloc_trim() call
+    after gc.collect() recovered 66MB of it - not a leak, just
+    retained-but-freeable arenas). Calling this periodically keeps RAM
+    from climbing unboundedly on a long-running box."""
+    gc.collect()
+    try:
+        _libc.malloc_trim(0)
+    except OSError:
+        pass
 
 
 def make_process_nondumpable() -> bool:
@@ -104,6 +122,9 @@ class CombinedSecureBox:
                 self._buf[NONCE_LEN:NONCE_LEN + len(new_ciphertext)] = new_ciphertext
                 self._payload_len = len(new_ciphertext)
                 self._hops += 1
+
+            if self._hops % TRIM_EVERY_N_HOPS == 0:
+                _release_freed_memory()
 
     @property
     def hops(self) -> int:

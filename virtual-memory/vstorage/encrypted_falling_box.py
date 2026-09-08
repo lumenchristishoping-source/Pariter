@@ -46,12 +46,27 @@ import mmap
 import os
 import threading
 
+import gc
+
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 _libc = ctypes.CDLL("libc.so.6", use_errno=True)
 MADV_DONTDUMP = 16
 PAGE_SIZE = mmap.PAGESIZE
 NONCE_LEN = 12
+TRIM_EVERY_N_HOPS = 20
+
+
+def _release_freed_memory() -> None:
+    """Same allocator-retention issue found and fixed throughout this
+    project: every hop's fresh AESGCM objects leave freeable-but-not-
+    freed heap arenas behind. Periodic trim keeps RAM flat instead of
+    climbing unboundedly on a long-running box."""
+    gc.collect()
+    try:
+        _libc.malloc_trim(0)
+    except OSError:
+        pass
 
 
 def _round_up_page(n: int) -> int:
@@ -129,6 +144,9 @@ class EncryptedFallingBox:
                 self._buf[NONCE_LEN:NONCE_LEN + len(new_ciphertext)] = new_ciphertext
                 self._payload_len = len(new_ciphertext)
                 self._hops += 1
+
+            if self._hops % TRIM_EVERY_N_HOPS == 0:
+                _release_freed_memory()
 
     @property
     def hops(self) -> int:

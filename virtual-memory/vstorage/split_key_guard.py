@@ -11,24 +11,37 @@ lzma consistently turns a 32-byte AES key into 88 bytes (verified:
 here, exactly as asked - it just doesn't get smaller, it gets a little
 bigger, because of the container format's own overhead.
 
-Each byte then lives in its own locked, dontdump-protected pair of
-memory pages, bouncing between them on ITS OWN random schedule -
-different interval, different phase, unrelated to every other byte's
-timer. This is a genuinely different property from the earlier
-"many falling boxes" experiment for the whole file: that failed
-because every box held a FULL, independent COPY (any one of them was
-enough). Here, no single cell holds anything useful by itself - all
-88 have to be read, at their correct positions, to reconstruct
-anything. Missing even one breaks the whole key.
+Each byte lives in its own locked, dontdump-protected pair of memory
+pages - 88 separate addresses, which is the part that actually matters
+(no single one holds anything useful; all 88 are needed, at their
+correct positions, to reconstruct anything - a genuinely different
+property than the earlier "many falling boxes" experiment, which
+failed because every box held a full, independent copy).
+
+Version history, and why this isn't 88 threads anymore: the first
+version gave each byte its own OS thread. Tested under real combined
+load (with the data box's crypto running too), that pushed RssAnon
+from a real ~200KB of actual data up to +67MB - not from the crypto
+(measured separately: flat, +220KB over 150 iterations with no extra
+threads) and not from the threads existing (88 idle threads alone:
++1.3MB). It was glibc spinning up a separate memory arena per
+concurrently-allocating thread, and a malloc_trim() call from one
+thread doesn't reliably reach garbage sitting in another thread's
+arena. Fixed by keeping the 88 separate LOCATIONS (the real security
+property) but servicing them all from ONE scheduler thread instead of
+88 - each cell still gets its own independent, randomized next-hop
+time, just serviced by a shared mover instead of a dedicated thread.
 """
 
 from __future__ import annotations
 
 import ctypes
+import heapq
 import lzma
 import mmap
 import random
 import threading
+import time
 from typing import List
 
 _libc = ctypes.CDLL("libc.so.6", use_errno=True)
@@ -45,96 +58,114 @@ def _lock_and_hide(buf: mmap.mmap) -> dict:
     return {"mlock": mlock_ok, "dontdump": dontdump_ok}
 
 
-class KeyByteCell:
-    """One byte of the key, bouncing between its own two locked pages
-    on its own independent, randomly-jittered schedule."""
+class _RawCell:
+    """One byte's own two locked pages. No thread of its own - the
+    shared scheduler in SplitKeyGuard calls bounce()/write() on it at
+    that cell's own independently-scheduled moment."""
 
-    def __init__(self, value: int, min_interval: float = 0.001,
-                 max_interval: float = 0.01):
+    def __init__(self, value: int):
         self._page_a = mmap.mmap(-1, PAGE_SIZE)
         self._page_b = mmap.mmap(-1, PAGE_SIZE)
         self._page_a[0:1] = bytes([value])
         self._active = "a"
-        self._lock = threading.Lock()
-        self._hops = 0
-        self._stop = threading.Event()
-        self._min_interval = min_interval
-        self._max_interval = max_interval
-
         self.protection_status = {
             "a": _lock_and_hide(self._page_a), "b": _lock_and_hide(self._page_b),
         }
 
-        self._thread = threading.Thread(target=self._fall_forever, daemon=True)
-        self._thread.start()
-
-    def _fall_forever(self) -> None:
-        while not self._stop.is_set():
-            with self._lock:
-                if self._active == "a":
-                    self._page_b[0:1] = self._page_a[0:1]
-                    self._active = "b"
-                else:
-                    self._page_a[0:1] = self._page_b[0:1]
-                    self._active = "a"
-                self._hops += 1
-            # independent timer per byte - not synchronized with the others
-            self._stop.wait(random.uniform(self._min_interval, self._max_interval))
+    def bounce(self) -> None:
+        if self._active == "a":
+            self._page_b[0:1] = self._page_a[0:1]
+            self._active = "b"
+        else:
+            self._page_a[0:1] = self._page_b[0:1]
+            self._active = "a"
 
     def read(self) -> int:
-        with self._lock:
-            active = self._page_a if self._active == "a" else self._page_b
-            return active[0]
+        active = self._page_a if self._active == "a" else self._page_b
+        return active[0]
 
     def write(self, value: int) -> None:
-        with self._lock:
-            active = self._page_a if self._active == "a" else self._page_b
-            active[0:1] = bytes([value])
-
-    @property
-    def hops(self) -> int:
-        return self._hops
+        active = self._page_a if self._active == "a" else self._page_b
+        active[0:1] = bytes([value])
 
     def collapse(self) -> None:
-        self._stop.set()
-        self._thread.join(timeout=1)
         self._page_a.close()
         self._page_b.close()
 
 
 class SplitKeyGuard:
-    """Compresses a key, splits it into one cell per byte, each
-    hopping independently. reconstruct() re-assembles it on demand;
-    update() rewrites all cells to a new key without tearing down and
-    recreating 176 mmap regions and 88 threads on every ratchet."""
+    """Compresses a key, splits it into one cell per byte (88 separate
+    locked address-pairs), each cell's hop serviced by ONE shared
+    scheduler thread at that cell's own independently-randomized time
+    - not synchronized with the others, but without 88 separate OS
+    threads. update() rewrites all cells to a new key without
+    recreating any mmap regions or threads."""
 
-    def __init__(self, key: bytes):
+    def __init__(self, key: bytes, min_interval: float = 0.001,
+                 max_interval: float = 0.01):
         compressed = lzma.compress(key, preset=9)
         self.original_len = len(key)
         self.compressed_len = len(compressed)
-        self._cells: List[KeyByteCell] = [KeyByteCell(b) for b in compressed]
+        self._min_interval = min_interval
+        self._max_interval = max_interval
+
+        self._cells: List[_RawCell] = [_RawCell(b) for b in compressed]
+        self._hops = [0] * len(self._cells)
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+
+        now = time.monotonic()
+        self._heap = [
+            (now + random.uniform(min_interval, max_interval), i)
+            for i in range(len(self._cells))
+        ]
+        heapq.heapify(self._heap)
+
+        self._thread = threading.Thread(target=self._scheduler, daemon=True)
+        self._thread.start()
+
+    def _scheduler(self) -> None:
+        while not self._stop.is_set():
+            with self._lock:
+                due_time, idx = self._heap[0]
+            wait = due_time - time.monotonic()
+            if wait > 0:
+                self._stop.wait(min(wait, 0.01))
+                continue
+            with self._lock:
+                if not self._heap:
+                    continue
+                due_time, idx = heapq.heappop(self._heap)
+                self._cells[idx].bounce()
+                self._hops[idx] += 1
+                next_due = time.monotonic() + random.uniform(
+                    self._min_interval, self._max_interval)
+                heapq.heappush(self._heap, (next_due, idx))
 
     def reconstruct(self) -> bytes:
-        compressed = bytes(cell.read() for cell in self._cells)
+        with self._lock:
+            compressed = bytes(cell.read() for cell in self._cells)
         return lzma.decompress(compressed)
 
     def update(self, new_key: bytes) -> bool:
         """Rewrites every cell to the new key's compressed bytes.
         Returns False (and does nothing) if the compressed length
-        changed - callers should handle that by building a fresh
-        guard instead, though in practice this doesn't happen for
-        same-length AES keys (verified: always 88 bytes for 32)."""
+        changed - in practice this doesn't happen for same-length AES
+        keys (verified: always 88 bytes for 32)."""
         compressed = lzma.compress(new_key, preset=9)
         if len(compressed) != len(self._cells):
             return False
-        for cell, b in zip(self._cells, compressed):
-            cell.write(b)
+        with self._lock:
+            for cell, b in zip(self._cells, compressed):
+                cell.write(b)
         return True
 
     @property
     def hop_counts(self) -> List[int]:
-        return [c.hops for c in self._cells]
+        return list(self._hops)
 
     def collapse(self) -> None:
+        self._stop.set()
+        self._thread.join(timeout=1)
         for c in self._cells:
             c.collapse()
