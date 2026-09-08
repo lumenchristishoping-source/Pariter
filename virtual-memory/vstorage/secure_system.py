@@ -4,10 +4,18 @@ API as system.py's VirtualStorage, but every piece protected by
 everything built and tested in this project:
 
   Step 1 (split.py):        content / structure / metadata, by type
-  Step 2+3 (CombinedSecureBox): each piece is ONE ciphertext buffer,
-      ratcheted under a fresh key every hop, that key itself split
-      byte-by-byte across 88 independently-timed, separately locked
-      cells - mlock()'d and MADV_DONTDUMP'd throughout
+  Step 2+3 (ChunkedSecureBox): each piece is compressed once, then
+      split into 256KB chunks, each its own separately locked
+      ciphertext buffer - one chunk ratcheted per hop under a fresh
+      key, that key itself split byte-by-byte across 88 independently
+      -timed, separately locked cells - mlock()'d and MADV_DONTDUMP'd
+      throughout. This is the box that scales: a real 1GB file holds
+      at ~66MB steady-state (compression) instead of ballooning the
+      way whole-buffer encryption did before this existed. The older,
+      whole-buffer CombinedSecureBox still exists in
+      combined_secure_box.py with its own tests, but nothing here
+      uses it anymore - kept only as a reference for what "before
+      chunking" looked like.
   Step 4 (ProcessWatchdog): one watchdog for the whole system,
       running as a REAL SEPARATE OS PROCESS - not a thread, because a
       thread-based watchdog was tested and found to lose the race
@@ -30,12 +38,9 @@ everything built and tested in this project:
   this machine no longer lets an attacker compute what comes next.
 
 Honest, tested scope and limits:
-  - Small-to-medium files only (tested up to a few MB cleanly). A 50MB
-    payload through CombinedSecureBox measured +250MB RAM per hop even
-    with pacing - a real limit of whole-buffer encryption. For large
-    files, use chunked_secure_box.py's ChunkedSecureBox instead (not
-    yet wired in here - same RAM cost dropped to +52MB, bounded, in
-    its own testing).
+  - Verified end-to-end on a real 1GB file through THIS class's own
+    save()/retrieve() (test_1gb_through_real_system.py) - not just the
+    box in isolation. Byte-perfect, steady-state RAM ~66MB.
   - The watchdog only sees ptrace_attach-based access (TracerPid).
     Tested and confirmed: a root-privileged reader can open and read
     /proc/<pid>/mem successfully with NO attach at all, and this
@@ -54,7 +59,8 @@ import uuid
 from dataclasses import dataclass
 from typing import Dict
 
-from .combined_secure_box import CombinedSecureBox, make_process_nondumpable
+from .chunked_secure_box import ChunkedSecureBox
+from .combined_secure_box import make_process_nondumpable
 from .distributed_key import DistributedTrustGroup
 from .process_watchdog import ProcessWatchdog
 from .splitter import SplitResult, split_bytes, split_file
@@ -64,7 +70,7 @@ Piece = str
 
 @dataclass
 class _Held:
-    boxes: Dict[Piece, CombinedSecureBox]
+    boxes: Dict[Piece, ChunkedSecureBox]
     reconstruct_from: Piece
     original_size: int
     name: str = ""
@@ -106,9 +112,9 @@ class SecureVirtualStorage:
     def _hold(self, result: SplitResult, name: str) -> str:
         file_id = uuid.uuid4().hex
         boxes = {
-            "content": CombinedSecureBox(result.content, trust_group=self._trust_group),
-            "structure": CombinedSecureBox(result.structure, trust_group=self._trust_group),
-            "metadata": CombinedSecureBox(result.metadata, trust_group=self._trust_group),
+            "content": ChunkedSecureBox(result.content, trust_group=self._trust_group),
+            "structure": ChunkedSecureBox(result.structure, trust_group=self._trust_group),
+            "metadata": ChunkedSecureBox(result.metadata, trust_group=self._trust_group),
         }
         if self._watchdog:
             regions = []

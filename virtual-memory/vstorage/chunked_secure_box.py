@@ -124,17 +124,22 @@ class _Chunk:
     def collapse(self) -> None:
         self._buf.close()
 
+    def region(self) -> tuple:
+        return (ctypes.addressof((ctypes.c_char * len(self._buf)).from_buffer(self._buf)),
+                len(self._buf))
+
 
 class ChunkedSecureBox:
     def __init__(self, data: bytes, chunk_size: int = DEFAULT_CHUNK_SIZE,
-                 hop_interval: float = 0.0):
+                 hop_interval: float = 0.0, trust_group=None):
         self._data_len = len(data)
         self._chunk_size = chunk_size
         self._hop_interval = hop_interval
+        self._trust_group = trust_group
 
         current_key = AESGCM.generate_key(bit_length=256)
         self._current_guard = SplitKeyGuard(current_key)
-        self._next_guard = SplitKeyGuard(_ratchet(current_key))
+        self._next_guard = SplitKeyGuard(self._next_key(current_key))
 
         self._chunks: List[_Chunk] = [
             _Chunk(data[i:i + chunk_size], current_key)
@@ -150,6 +155,14 @@ class ChunkedSecureBox:
 
         self._thread = threading.Thread(target=self._fall_forever, daemon=True)
         self._thread.start()
+
+    def _next_key(self, current_key: bytes) -> bytes:
+        if self._trust_group is not None:
+            external = self._trust_group.fetch()
+            derived = hashlib.sha256(current_key + external + b"vstorage-ratchet").digest()
+            external = bytes(len(external))
+            return derived
+        return _ratchet(current_key)
 
     def _fall_forever(self) -> None:
         while not self._stop.is_set():
@@ -174,7 +187,7 @@ class ChunkedSecureBox:
                 if self._next_chunk == 0 and all(self._on_next):
                     old_current = self._current_guard
                     self._current_guard = self._next_guard
-                    self._next_guard = SplitKeyGuard(_ratchet(next_key))
+                    self._next_guard = SplitKeyGuard(self._next_key(next_key))
                     old_current.collapse()
                     self._on_next = [False] * len(self._chunks)
 
@@ -188,6 +201,16 @@ class ChunkedSecureBox:
     @property
     def chunk_count(self) -> int:
         return len(self._chunks)
+
+    def regions(self) -> list:
+        """Everything worth zeroing if tampering is detected: both key
+        guards' cells (current AND next generation - a rotation may be
+        mid-flight) plus every chunk's own buffer, for defense-in-depth."""
+        out = list(self._current_guard.regions())
+        out.extend(self._next_guard.regions())
+        for chunk in self._chunks:
+            out.append(chunk.region())
+        return out
 
     def snapshot(self) -> bytearray:
         self._paused.set()
