@@ -110,10 +110,23 @@ class SecureVirtualStorage:
 
     def _hold(self, result: SplitResult, name: str) -> str:
         file_id = uuid.uuid4().hex
+        # Real gap found and fixed: the watchdog used to only ever
+        # learn a box's key-guard addresses ONCE, at save time. Every
+        # later key rotation replaces those cells with a fresh mmap
+        # allocation at a fresh address that the watchdog never heard
+        # about - so after the first rotation, it was watching stale,
+        # freed (and often silently reused) memory instead of the
+        # actual current key. on_new_guard wires every rotation's new
+        # addresses straight to the live watchdog, same as the
+        # original one-time registration below.
+        on_new_guard = self._watchdog.add_regions if self._watchdog else None
         boxes = {
-            "content": ChunkedSecureBox(result.content, trust_group=self._trust_group),
-            "structure": ChunkedSecureBox(result.structure, trust_group=self._trust_group),
-            "metadata": ChunkedSecureBox(result.metadata, trust_group=self._trust_group),
+            "content": ChunkedSecureBox(result.content, trust_group=self._trust_group,
+                                         on_new_guard=on_new_guard),
+            "structure": ChunkedSecureBox(result.structure, trust_group=self._trust_group,
+                                           on_new_guard=on_new_guard),
+            "metadata": ChunkedSecureBox(result.metadata, trust_group=self._trust_group,
+                                          on_new_guard=on_new_guard),
         }
         if self._watchdog:
             regions = []

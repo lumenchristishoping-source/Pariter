@@ -242,11 +242,12 @@ _fall_scheduler = _GlobalFallScheduler()
 
 class ChunkedSecureBox:
     def __init__(self, data: bytes, chunk_size: int = DEFAULT_CHUNK_SIZE,
-                 hop_interval: float = 0.0, trust_group=None):
+                 hop_interval: float = 0.0, trust_group=None, on_new_guard=None):
         self._data_len = len(data)
         self._chunk_size = chunk_size
         self._hop_interval = hop_interval
         self._trust_group = trust_group
+        self._on_new_guard = on_new_guard
 
         current_key = AESGCM.generate_key(bit_length=256)
         self._current_guard = SplitKeyGuard(current_key)
@@ -262,7 +263,8 @@ class ChunkedSecureBox:
 
     @classmethod
     def from_file(cls, path: str, chunk_size: int = DEFAULT_CHUNK_SIZE,
-                  hop_interval: float = 0.0, trust_group=None) -> "ChunkedSecureBox":
+                  hop_interval: float = 0.0, trust_group=None,
+                  on_new_guard=None) -> "ChunkedSecureBox":
         """Streams the file in from disk, chunk_size bytes at a time -
         never holds the whole file as one Python object. __init__
         needs the full file as `data: bytes` first, which for a small
@@ -277,6 +279,7 @@ class ChunkedSecureBox:
         self._chunk_size = chunk_size
         self._hop_interval = hop_interval
         self._trust_group = trust_group
+        self._on_new_guard = on_new_guard
 
         current_key = AESGCM.generate_key(bit_length=256)
         self._current_guard = SplitKeyGuard(current_key)
@@ -314,7 +317,22 @@ class ChunkedSecureBox:
 
     def _do_one_hop_locked(self) -> None:
         """Advances exactly one chunk by one hop. Caller (the shared
-        _GlobalFallScheduler) must already hold self._lock."""
+        _GlobalFallScheduler) must already hold self._lock.
+
+        Real gap found and fixed here: a watchdog only ever gets told
+        a box's key-guard addresses ONCE, when regions() is first
+        called at file-save time. But this method REPLACES
+        _next_guard with a brand new SplitKeyGuard (a fresh mmap
+        allocation, fresh addresses) every time a generation
+        completes - so without on_new_guard(), the watchdog keeps
+        watching the OLD, by-then-freed addresses forever after the
+        first rotation. Confirmed directly: after one rotation, the
+        stale address is often still readable and non-zero - not
+        because the wipe failed, but because the freed address gets
+        silently reused for unrelated live memory. A real attack
+        landing after that point would have the watchdog wipe the
+        wrong thing. This was always true; it just took a fast enough
+        rotation rate to actually observe it happening."""
         idx = self._next_chunk
         chunk = self._chunks[idx]
         current_key = self._current_guard.reconstruct()
@@ -333,6 +351,8 @@ class ChunkedSecureBox:
             old_current = self._current_guard
             self._current_guard = self._next_guard
             self._next_guard = SplitKeyGuard(self._next_key(next_key))
+            if self._on_new_guard is not None:
+                self._on_new_guard(self._next_guard.regions())
             old_current.collapse()
             self._on_next = [False] * len(self._chunks)
 
