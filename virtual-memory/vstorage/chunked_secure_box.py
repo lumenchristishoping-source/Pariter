@@ -16,6 +16,20 @@ of FILE size. Same principle every real system uses for large data
 (TLS records, disk-encryption sectors, cloud storage server-side
 encryption).
 
+Each chunk is compressed ONCE, at construction, before it's ever
+encrypted - compress-then-encrypt, the only order that works, since
+encrypted bytes are indistinguishable from random and don't compress
+at all. This was missing for an embarrassingly long time: a 1GB real
+test ran clean through this exact module without it, and "physics,
+you can't hold 1GB in less than 1GB" was asserted as if it were a
+universal law rather than a true-for-incompressible-data statement -
+caught when asked directly "didn't it compress though? it's an .md
+file" about a document that was, in fact, extremely repetitive
+markdown text (34x compressible, checked directly with lzma before
+writing the fix). Ratcheting never recompresses - it decrypts and
+re-encrypts the same already-compressed bytes, so compression cost is
+paid once per chunk, not once per hop.
+
 Real bug found and fixed while building this: a naive first version
 shared ONE ratcheting key across all chunks, but only re-encrypted one
 chunk per hop - so the very next hop advanced the shared key while
@@ -37,6 +51,7 @@ from __future__ import annotations
 
 import ctypes
 import hashlib
+import lzma
 import mmap
 import os
 import threading
@@ -72,11 +87,12 @@ def secure_zero(buf) -> None:
 
 class _Chunk:
     def __init__(self, plaintext: bytes, key: bytes):
-        length = _round_up_page(len(plaintext) + 16 + NONCE_LEN)
+        compressed = lzma.compress(plaintext, preset=6) if plaintext else b""
+        length = _round_up_page(len(compressed) + 16 + NONCE_LEN)
         self._buf = mmap.mmap(-1, length, flags=mmap.MAP_PRIVATE | mmap.MAP_ANONYMOUS)
         self.plain_len = len(plaintext)
         nonce = os.urandom(NONCE_LEN)
-        ct = AESGCM(key).encrypt(nonce, plaintext, None)
+        ct = AESGCM(key).encrypt(nonce, compressed, None)
         self._buf[:NONCE_LEN] = nonce
         self._buf[NONCE_LEN:NONCE_LEN + len(ct)] = ct
         self.payload_len = len(ct)
@@ -85,13 +101,15 @@ class _Chunk:
     def reencrypt(self, current_key: bytes, new_key: bytes) -> None:
         """Decrypt under current_key, re-encrypt under new_key (which
         may equal current_key - a fresh nonce alone is still real
-        motion and still a valid AES-GCM use)."""
+        motion and still a valid AES-GCM use). Operates on the already
+        -compressed bytes - compression happens once, at construction,
+        never again per hop."""
         nonce = bytes(self._buf[:NONCE_LEN])
         ct = bytes(self._buf[NONCE_LEN:NONCE_LEN + self.payload_len])
-        plaintext = AESGCM(current_key).decrypt(nonce, ct, None)
+        compressed = AESGCM(current_key).decrypt(nonce, ct, None)
         new_nonce = os.urandom(NONCE_LEN)
-        new_ct = AESGCM(new_key).encrypt(new_nonce, plaintext, None)
-        scratch = bytearray(plaintext)
+        new_ct = AESGCM(new_key).encrypt(new_nonce, compressed, None)
+        scratch = bytearray(compressed)
         secure_zero(scratch)
         self._buf[:NONCE_LEN] = new_nonce
         self._buf[NONCE_LEN:NONCE_LEN + len(new_ct)] = new_ct
@@ -100,7 +118,8 @@ class _Chunk:
     def decrypt(self, key: bytes) -> bytes:
         nonce = bytes(self._buf[:NONCE_LEN])
         ct = bytes(self._buf[NONCE_LEN:NONCE_LEN + self.payload_len])
-        return AESGCM(key).decrypt(nonce, ct, None)
+        compressed = AESGCM(key).decrypt(nonce, ct, None)
+        return lzma.decompress(compressed) if compressed else b""
 
     def collapse(self) -> None:
         self._buf.close()
