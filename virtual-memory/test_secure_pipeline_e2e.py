@@ -67,17 +67,21 @@ import sys, time, os
 sys.path.insert(0, {vstorage_dir!r})
 from vstorage.secure_system import SecureVirtualStorage
 
-RESULT_FILE = {result_file!r}
-
-def record_detection():
-    tmp = RESULT_FILE + ".tmp"
-    with open(tmp, "w") as f:
-        f.write(repr(time.time()))
-    os.rename(tmp, RESULT_FILE)  # atomic - never observed half-written
-
-vs = SecureVirtualStorage(_on_tamper_hook=record_detection)
+vs = SecureVirtualStorage(kill_on_tamper=False)  # so this process survives
+# long enough for the parent to inspect it afterward - real deployments
+# would leave kill_on_tamper=True (the default)
 file_id = vs.save({real_pdf!r})
-print(f"{{os.getpid()}}", flush=True)
+
+# Print one registered region so the parent can check it directly from
+# OUTSIDE after the attack. Verifying via THIS process's own polling
+# loop doesn't work - ptrace_attach's own SIGSTOP freezes this process's
+# main thread the instant it lands, so it can never get back to Python
+# bytecode to check or report anything, whether the watchdog worked or
+# not. The watchdog process itself is unaffected (separate process,
+# never stopped), so the wipe still happens - we just can't ask the
+# frozen child to confirm it. Ask from outside instead.
+addr, length = vs._watchdog._regions[0], vs._watchdog._regions[1]
+print(f"{{os.getpid()}} {{addr}} {{length}}", flush=True)
 time.sleep(10)
 """
 
@@ -86,9 +90,7 @@ def part2_real_attack() -> None:
     print("=== Part 2: real ptrace attack against the WHOLE pipeline ===\n")
     vstorage_dir = os.path.dirname(os.path.abspath(__file__))
     tmpdir = tempfile.mkdtemp(prefix="pipeline_attack_")
-    result_file = os.path.join(tmpdir, "result.txt")
-    script_text = CHILD_SCRIPT.format(vstorage_dir=vstorage_dir, real_pdf=REAL_PDF,
-                                       result_file=result_file)
+    script_text = CHILD_SCRIPT.format(vstorage_dir=vstorage_dir, real_pdf=REAL_PDF)
 
     script_path = os.path.join(tmpdir, "child.py")
     with open(script_path, "w") as f:
@@ -96,38 +98,33 @@ def part2_real_attack() -> None:
 
     child = subprocess.Popen([sys.executable, script_path],
                               stdout=subprocess.PIPE, text=True)
-    child_pid = int(child.stdout.readline().strip())
+    child_pid_s, addr_s, length_s = child.stdout.readline().split()
+    child_pid, addr, length = int(child_pid_s), int(addr_s), int(length_s)
     time.sleep(0.3)  # let the pipeline fully spin up (watchdog + 3 pieces)
+
+    with open(f"/proc/{child_pid}/mem", "rb", buffering=0) as f:
+        f.seek(addr)
+        before_attack = f.read(length)
+    print(f"registered region before attack: non-zero bytes present: "
+          f"{any(before_attack)} (should be True - real key material)")
 
     libc = ctypes.CDLL("libc.so.6", use_errno=True)
     PTRACE_ATTACH = 16
-    t_attach = time.time()
     ret = libc.ptrace(PTRACE_ATTACH, child_pid, None, None)
-    print(f"attached to pid {child_pid} at t=0 (ptrace ret={ret})")
-    print("note: ptrace attach itself sends SIGSTOP to the target - the "
-          "process exiting/stopping alone does NOT prove the watchdog fired, "
-          "so this checks for the actual timestamp file the hook writes.")
+    print(f"attached to pid {child_pid} (ptrace ret={ret})")
+    print("note: the child's own main thread is now frozen by ptrace's own "
+          "SIGSTOP and can never report on itself - checking the region's "
+          "actual content from OUTSIDE instead, the same way the attacker "
+          "would read it.")
 
-    for _ in range(400):
-        if os.path.exists(result_file):
-            break
-        time.sleep(0.005)
+    time.sleep(0.2)  # give the (unaffected, separate-process) watchdog time to react
+    with open(f"/proc/{child_pid}/mem", "rb", buffering=0) as f:
+        f.seek(addr)
+        after_attack = f.read(length)
+    wiped = not any(after_attack)
+    print(f"\nsame region after attack: all zero = {wiped} "
+          f"({'watchdog wiped it for real' if wiped else 'NOT wiped - problem'})")
 
-    elapsed_process = time.time() - t_attach
-    if os.path.exists(result_file):
-        with open(result_file) as f:
-            detected_at = eval(f.read())
-        print(f"\nwatchdog hook confirmed detection at "
-              f"+{(detected_at - t_attach)*1000:.2f}ms after attach - "
-              f"REAL proof the wipe-and-exit path actually ran, not just "
-              f"a raw SIGSTOP from the attach itself.")
-    else:
-        print(f"\nno result file after {elapsed_process*1000:.0f}ms - "
-              f"watchdog did NOT confirm firing (needs investigation, "
-              f"not just assumed working).")
-
-    child.poll()
-    print(f"child process return code: {child.returncode}")
     child.kill()
 
 

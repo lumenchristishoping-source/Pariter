@@ -88,6 +88,15 @@ class _RawCell:
         active = self._page_a if self._active == "a" else self._page_b
         active[0:1] = bytes([value])
 
+    def regions(self) -> list:
+        """Both pages' addresses - stable for this cell's whole life
+        (bounce() only ever rewrites the 1 byte inside them, never
+        reallocates), so a watchdog can register them once and they
+        stay valid targets to zero for as long as the cell exists."""
+        a = ctypes.addressof((ctypes.c_char * len(self._page_a)).from_buffer(self._page_a))
+        b = ctypes.addressof((ctypes.c_char * len(self._page_b)).from_buffer(self._page_b))
+        return [(a, len(self._page_a)), (b, len(self._page_b))]
+
     def collapse(self) -> None:
         self._page_a.close()
         self._page_b.close()
@@ -163,6 +172,12 @@ class SplitKeyGuard:
     @property
     def hop_counts(self) -> List[int]:
         return list(self._hops)
+
+    def regions(self) -> list:
+        out = []
+        for cell in self._cells:
+            out.extend(cell.regions())
+        return out
 
     def collapse(self) -> None:
         self._stop.set()

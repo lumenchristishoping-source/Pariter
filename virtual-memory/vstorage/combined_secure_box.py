@@ -155,6 +155,16 @@ class CombinedSecureBox:
     def key_cell_hops(self):
         return self._key_guard.hop_counts
 
+    def regions(self) -> list:
+        """Everything worth zeroing if tampering is detected: every
+        key-byte cell's two pages (breaks the key beyond recovery -
+        cheap, small, and enough on its own since the data buffer is
+        ciphertext without it) plus the data buffer itself for
+        defense-in-depth."""
+        out = list(self._key_guard.regions())
+        out.append((_mmap_addr(self._buf), self._buf_len))
+        return out
+
     def raw_ciphertext_snapshot(self) -> bytes:
         with self._lock:
             return bytes(self._buf[:NONCE_LEN + self._payload_len])

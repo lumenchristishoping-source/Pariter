@@ -53,12 +53,6 @@ def _tracer_pid_of(pid: int) -> int:
     return 0
 
 
-def _wipe_region(target_pid: int, addr: int, length: int) -> None:
-    with open(f"/proc/{target_pid}/mem", "r+b", buffering=0) as f:
-        f.seek(addr)
-        f.write(bytes(length))
-
-
 def _watch_process(target_pid: int, regions: "mp.Array", region_count: "mp.Value",
                     detected_flag: "mp.Value", detected_at: "mp.Value",
                     kill_target: bool) -> None:
@@ -69,13 +63,21 @@ def _watch_process(target_pid: int, regions: "mp.Array", region_count: "mp.Value
         if tp != 0:
             t = time.time()
             n = region_count.value
-            for i in range(n):
-                addr = regions[i * 2]
-                length = regions[i * 2 + 1]
-                try:
-                    _wipe_region(target_pid, addr, length)
-                except Exception:
-                    pass
+            # One fd reused for every region - opening /proc/pid/mem fresh
+            # per region gets expensive once there are hundreds of them
+            # (a real pipeline's key cells alone can be 500+ pages).
+            try:
+                with open(f"/proc/{target_pid}/mem", "r+b", buffering=0) as f:
+                    for i in range(n):
+                        addr = regions[i * 2]
+                        length = regions[i * 2 + 1]
+                        try:
+                            f.seek(addr)
+                            f.write(bytes(length))
+                        except OSError:
+                            pass
+            except OSError:
+                pass
             detected_at.value = t
             detected_flag.value = 1
             if kill_target:
@@ -95,7 +97,9 @@ class ProcessWatchdog:
     regions registered after the watchdog starts are still covered.
     """
 
-    MAX_REGIONS = 512
+    MAX_REGIONS = 200_000  # a handful of files' key cells adds up fast:
+    # each SplitKeyGuard is 88 cells x 2 pages = 176 regions, x 3 pieces
+    # per file (content/structure/metadata) = 528 regions per file held
 
     def __init__(self, target_pid: int | None = None, kill_target: bool = True):
         self._target_pid = target_pid or os.getpid()
@@ -113,13 +117,20 @@ class ProcessWatchdog:
         self._process.start()
 
     def add_region(self, addr: int, length: int) -> None:
+        self.add_regions([(addr, length)])
+
+    def add_regions(self, regions: list) -> None:
+        """Registers many regions under one lock acquisition - a
+        single file's worth of key cells is already 500+ regions,
+        acquiring the lock once per region would add real overhead."""
         with self._region_count.get_lock():
             i = self._region_count.value
-            if i >= self.MAX_REGIONS:
+            if i + len(regions) > self.MAX_REGIONS:
                 raise RuntimeError("ProcessWatchdog region table full")
-            self._regions[i * 2] = addr
-            self._regions[i * 2 + 1] = length
-            self._region_count.value = i + 1
+            for j, (addr, length) in enumerate(regions):
+                self._regions[(i + j) * 2] = addr
+                self._regions[(i + j) * 2 + 1] = length
+            self._region_count.value = i + len(regions)
 
     @property
     def triggered(self) -> bool:
