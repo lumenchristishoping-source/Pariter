@@ -123,11 +123,16 @@ class _RawCell:
 
 
 class _GlobalCellScheduler:
-    """One shared background thread services every SplitKeyGuard's
-    cells in the whole process, instead of each guard running its own
-    scheduler thread - see the module docstring's "second round" note
-    for why. Every cell keeps its own independently-randomized next-
-    hop time; this only changes who does the checking-in.
+    """A small pool of shared background threads services every
+    SplitKeyGuard's cells in the whole process, instead of each guard
+    running its own scheduler thread - see the module docstring's
+    "second round" note for why. A real multi-file run found that a
+    single shared thread here (or in the matching fall-motion pool in
+    chunked_secure_box.py) can be starved completely by a sustained
+    heavy operation elsewhere - a small pool (default 4) gives real
+    headroom against that without coming close to the old per-guard
+    thread count. Every cell keeps its own independently-randomized
+    next-hop time; this only changes who does the checking-in.
 
     Safety: a guard's own `_lock` (already used by reconstruct() and
     update()) is reused here too - the scheduler only ever touches a
@@ -136,21 +141,25 @@ class _GlobalCellScheduler:
     either in flight or will start again afterward, before it closes
     the underlying mmap pages."""
 
-    def __init__(self):
+    DEFAULT_WORKERS = 4
+
+    def __init__(self, worker_count: int = DEFAULT_WORKERS):
+        self._worker_count = worker_count
         self._lock = threading.Lock()
         self._heap: list = []  # (due_time, seq, guard, cell_index)
         self._seq = 0
         self._wakeup = threading.Event()
-        self._thread: threading.Thread | None = None
+        self._threads: List[threading.Thread] = []
 
     def _ensure_started(self) -> None:
-        if self._thread is not None:
+        if self._threads:
             return
         with self._lock:
-            if self._thread is None:
-                t = threading.Thread(target=self._run, daemon=True)
-                self._thread = t
-                t.start()
+            if not self._threads:
+                for _ in range(self._worker_count):
+                    t = threading.Thread(target=self._run, daemon=True)
+                    self._threads.append(t)
+                    t.start()
 
     def register(self, guard: "SplitKeyGuard") -> None:
         self._ensure_started()
@@ -177,6 +186,11 @@ class _GlobalCellScheduler:
                 continue
             with self._lock:
                 if not self._heap:
+                    continue
+                # Several workers now race each other here - only take
+                # an entry that is actually due right now (see the
+                # matching note in chunked_secure_box.py's fall pool).
+                if self._heap[0][0] - time.monotonic() > 0:
                     continue
                 _due, _seq, guard, idx = heapq.heappop(self._heap)
             next_due = None

@@ -144,29 +144,40 @@ class _Chunk:
 
 
 class _GlobalFallScheduler:
-    """One shared background thread advances every ChunkedSecureBox's
-    falling motion (one chunk re-encrypted per tick, round-robin per
-    box) instead of each box running its own thread - see the module
-    docstring's "second real cost" note. Each box keeps its own
-    independent pacing and its own lock; only the thread doing the
-    work is shared, the same pattern _GlobalCellScheduler in
-    split_key_guard.py already uses for the key cells."""
+    """A small pool of shared background threads advances every
+    ChunkedSecureBox's falling motion (one chunk re-encrypted per
+    tick, round-robin per box), instead of one thread PER BOX (the
+    original, expensive design - see the module docstring's "second
+    real cost" note) or exactly one shared thread for the whole
+    process (the first fix - correct and far cheaper, but found to
+    have a real cost of its own: a real 24-file run showed 29 of 75
+    boxes getting ZERO hops during a 75s window where the main thread
+    was busy with heavy save/retrieve work for 69 of those seconds -
+    one thread can be starved completely). A small pool (default 4)
+    keeps the thread count nowhere near the old per-box cost while
+    giving rotation real headroom: if 3 workers are blocked or busy,
+    a 4th can still make progress. Each box keeps its own independent
+    pacing and its own lock; only the pool of workers is shared."""
 
-    def __init__(self):
+    DEFAULT_WORKERS = 4
+
+    def __init__(self, worker_count: int = DEFAULT_WORKERS):
+        self._worker_count = worker_count
         self._lock = threading.Lock()
         self._heap: list = []  # (due_time, seq, box)
         self._seq = 0
         self._wakeup = threading.Event()
-        self._thread: threading.Thread | None = None
+        self._threads: List[threading.Thread] = []
 
     def _ensure_started(self) -> None:
-        if self._thread is not None:
+        if self._threads:
             return
         with self._lock:
-            if self._thread is None:
-                t = threading.Thread(target=self._run, daemon=True)
-                self._thread = t
-                t.start()
+            if not self._threads:
+                for _ in range(self._worker_count):
+                    t = threading.Thread(target=self._run, daemon=True)
+                    self._threads.append(t)
+                    t.start()
 
     def register(self, box: "ChunkedSecureBox") -> None:
         self._ensure_started()
@@ -190,6 +201,13 @@ class _GlobalFallScheduler:
                 continue
             with self._lock:
                 if not self._heap:
+                    continue
+                # Re-check under the lock: with several workers now
+                # racing each other, another worker may already have
+                # popped what we peeked at above, or a NEWER entry may
+                # have taken the top spot. Either way, only take an
+                # entry that is actually due right now.
+                if self._heap[0][0] - time.monotonic() > 0:
                     continue
                 _due, _seq, box = heapq.heappop(self._heap)
 
