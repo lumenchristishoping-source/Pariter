@@ -42,8 +42,10 @@ def part1_normal_use() -> None:
     threads_after = threading.active_count()
     after = full_snapshot()["RssAnon"]
     print(f"threads: {threads_before} -> {threads_after} "
-          f"(+{threads_after - threads_before} - watchdog + 3 pieces x "
-          f"(data thread + key scheduler) = 7 expected)")
+          f"(+{threads_after - threads_before} - since the shared-scheduler "
+          f"fix, this stays ~2 (one global fall scheduler + one global key-"
+          f"cell scheduler) regardless of file count, instead of growing "
+          f"per piece)")
     print(f"RssAnon: {before} KB -> {after} KB (+{after - before} KB)\n")
 
     full = vs.retrieve(file_id, "full")

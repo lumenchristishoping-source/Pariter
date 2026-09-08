@@ -45,16 +45,30 @@ current, a fresh next is generated, and the cycle repeats. This is
 the same idea generational garbage collectors and rolling key-rotation
 systems use: never touch everything at once, migrate it gradually
 while always knowing which generation each piece is currently in.
+
+Second real cost found the same way split_key_guard.py's was: one
+falling thread PER BOX means one file (3 boxes: content/structure/
+metadata) costs 3 threads, and a real 24-file, ~2GB run costs 72 of
+them - on top of the 144 guard-scheduler threads that module used to
+spawn too, for 217 threads system-wide. Under that much GIL
+contention, saving 24 files took nearly an hour, and retrieving them
+back out was, in places, even slower than saving. Fixed the same way:
+every box now registers with ONE shared _GlobalFallScheduler instead
+of starting its own thread. Each box still gets its own independent
+pacing (hop_interval) and its own lock, exactly as before - only the
+thread doing the work is now shared.
 """
 
 from __future__ import annotations
 
 import ctypes
 import hashlib
+import heapq
 import lzma
 import mmap
 import os
 import threading
+import time
 from typing import List
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -129,6 +143,85 @@ class _Chunk:
                 len(self._buf))
 
 
+class _GlobalFallScheduler:
+    """One shared background thread advances every ChunkedSecureBox's
+    falling motion (one chunk re-encrypted per tick, round-robin per
+    box) instead of each box running its own thread - see the module
+    docstring's "second real cost" note. Each box keeps its own
+    independent pacing and its own lock; only the thread doing the
+    work is shared, the same pattern _GlobalCellScheduler in
+    split_key_guard.py already uses for the key cells."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._heap: list = []  # (due_time, seq, box)
+        self._seq = 0
+        self._wakeup = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def _ensure_started(self) -> None:
+        if self._thread is not None:
+            return
+        with self._lock:
+            if self._thread is None:
+                t = threading.Thread(target=self._run, daemon=True)
+                self._thread = t
+                t.start()
+
+    def register(self, box: "ChunkedSecureBox") -> None:
+        self._ensure_started()
+        with self._lock:
+            self._seq += 1
+            heapq.heappush(self._heap, (time.monotonic(), self._seq, box))
+        self._wakeup.set()
+
+    def _run(self) -> None:
+        while True:
+            with self._lock:
+                entry = self._heap[0] if self._heap else None
+            if entry is None:
+                self._wakeup.wait(0.05)
+                self._wakeup.clear()
+                continue
+            wait = entry[0] - time.monotonic()
+            if wait > 0:
+                self._wakeup.wait(min(wait, 0.01))
+                self._wakeup.clear()
+                continue
+            with self._lock:
+                if not self._heap:
+                    continue
+                _due, _seq, box = heapq.heappop(self._heap)
+
+            with box._lock:
+                if box._removed:
+                    continue
+                if box._paused.is_set():
+                    delay = 0.001
+                else:
+                    try:
+                        box._do_one_hop_locked()
+                    except Exception:
+                        # A live tamper response (the watchdog zeroing
+                        # this box's cells from OUTSIDE, mid-hop) can
+                        # make reconstruct() fail here - expected under
+                        # real attack, not a bug. This is the ONE
+                        # shared thread for every box in the process,
+                        # so letting an exception escape would silently
+                        # stop falling motion for every OTHER file too;
+                        # drop this box (it's being wiped/killed anyway)
+                        # and keep servicing everyone else.
+                        continue
+                    delay = box._hop_interval
+
+            with self._lock:
+                self._seq += 1
+                heapq.heappush(self._heap, (time.monotonic() + delay, self._seq, box))
+
+
+_fall_scheduler = _GlobalFallScheduler()
+
+
 class ChunkedSecureBox:
     def __init__(self, data: bytes, chunk_size: int = DEFAULT_CHUNK_SIZE,
                  hop_interval: float = 0.0, trust_group=None):
@@ -188,11 +281,10 @@ class ChunkedSecureBox:
         self._lock = threading.Lock()
         self._hops = 0
         self._next_chunk = 0
-        self._stop = threading.Event()
         self._paused = threading.Event()
+        self._removed = False
 
-        self._thread = threading.Thread(target=self._fall_forever, daemon=True)
-        self._thread.start()
+        _fall_scheduler.register(self)
 
     def _next_key(self, current_key: bytes) -> bytes:
         if self._trust_group is not None:
@@ -202,35 +294,29 @@ class ChunkedSecureBox:
             return derived
         return _ratchet(current_key)
 
-    def _fall_forever(self) -> None:
-        while not self._stop.is_set():
-            if self._paused.is_set():
-                self._stop.wait(0.001)
-                continue
-            with self._lock:
-                idx = self._next_chunk
-                chunk = self._chunks[idx]
-                current_key = self._current_guard.reconstruct()
-                next_key = self._next_guard.reconstruct()
+    def _do_one_hop_locked(self) -> None:
+        """Advances exactly one chunk by one hop. Caller (the shared
+        _GlobalFallScheduler) must already hold self._lock."""
+        idx = self._next_chunk
+        chunk = self._chunks[idx]
+        current_key = self._current_guard.reconstruct()
+        next_key = self._next_guard.reconstruct()
 
-                if not self._on_next[idx]:
-                    chunk.reencrypt(current_key, next_key)
-                    self._on_next[idx] = True
-                else:
-                    chunk.reencrypt(next_key, next_key)  # fresh nonce, same generation
+        if not self._on_next[idx]:
+            chunk.reencrypt(current_key, next_key)
+            self._on_next[idx] = True
+        else:
+            chunk.reencrypt(next_key, next_key)  # fresh nonce, same generation
 
-                self._next_chunk = (idx + 1) % len(self._chunks)
-                self._hops += 1
+        self._next_chunk = (idx + 1) % len(self._chunks)
+        self._hops += 1
 
-                if self._next_chunk == 0 and all(self._on_next):
-                    old_current = self._current_guard
-                    self._current_guard = self._next_guard
-                    self._next_guard = SplitKeyGuard(self._next_key(next_key))
-                    old_current.collapse()
-                    self._on_next = [False] * len(self._chunks)
-
-            if self._hop_interval > 0:
-                self._stop.wait(self._hop_interval)
+        if self._next_chunk == 0 and all(self._on_next):
+            old_current = self._current_guard
+            self._current_guard = self._next_guard
+            self._next_guard = SplitKeyGuard(self._next_key(next_key))
+            old_current.collapse()
+            self._on_next = [False] * len(self._chunks)
 
     @property
     def hops(self) -> int:
@@ -263,8 +349,8 @@ class ChunkedSecureBox:
         return out[:self._data_len]
 
     def collapse(self) -> None:
-        self._stop.set()
-        self._thread.join(timeout=1)
+        with self._lock:
+            self._removed = True
         self._current_guard.collapse()
         self._next_guard.collapse()
         for chunk in self._chunks:

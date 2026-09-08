@@ -31,6 +31,19 @@ arena. Fixed by keeping the 88 separate LOCATIONS (the real security
 property) but servicing them all from ONE scheduler thread instead of
 88 - each cell still gets its own independent, randomized next-hop
 time, just serviced by a shared mover instead of a dedicated thread.
+
+Second round, found the same way: that fix was "one thread per GUARD,"
+which is fine for one file, but a real 24-file, ~2GB run (2 guards x
+3 pieces x 24 files = 144 guards) meant 144 of these scheduler threads
+alone, contributing to 217 total background threads system-wide - and
+under that much GIL contention, saving 24 files took nearly an hour,
+and RETRIEVING them back out was, in places, even slower than saving.
+Same fix, one level up: every guard in the whole process now registers
+its cells with ONE shared _GlobalCellScheduler instead of starting its
+own thread. Every cell keeps its own separately-mlocked, separately-
+hidden pair of pages (the real security property, still fully intact -
+this only changes which thread does the checking-in, not how many
+places the key lives or how independently each byte moves).
 """
 
 from __future__ import annotations
@@ -109,13 +122,95 @@ class _RawCell:
         self._page_b.close()
 
 
+class _GlobalCellScheduler:
+    """One shared background thread services every SplitKeyGuard's
+    cells in the whole process, instead of each guard running its own
+    scheduler thread - see the module docstring's "second round" note
+    for why. Every cell keeps its own independently-randomized next-
+    hop time; this only changes who does the checking-in.
+
+    Safety: a guard's own `_lock` (already used by reconstruct() and
+    update()) is reused here too - the scheduler only ever touches a
+    guard's cells while holding THAT guard's lock, so collapse() can
+    safely set `_removed` under the same lock and know no bounce is
+    either in flight or will start again afterward, before it closes
+    the underlying mmap pages."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._heap: list = []  # (due_time, seq, guard, cell_index)
+        self._seq = 0
+        self._wakeup = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def _ensure_started(self) -> None:
+        if self._thread is not None:
+            return
+        with self._lock:
+            if self._thread is None:
+                t = threading.Thread(target=self._run, daemon=True)
+                self._thread = t
+                t.start()
+
+    def register(self, guard: "SplitKeyGuard") -> None:
+        self._ensure_started()
+        now = time.monotonic()
+        with self._lock:
+            for idx in range(len(guard._cells)):
+                due = now + random.uniform(guard._min_interval, guard._max_interval)
+                self._seq += 1
+                heapq.heappush(self._heap, (due, self._seq, guard, idx))
+        self._wakeup.set()
+
+    def _run(self) -> None:
+        while True:
+            with self._lock:
+                entry = self._heap[0] if self._heap else None
+            if entry is None:
+                self._wakeup.wait(0.05)
+                self._wakeup.clear()
+                continue
+            wait = entry[0] - time.monotonic()
+            if wait > 0:
+                self._wakeup.wait(min(wait, 0.01))
+                self._wakeup.clear()
+                continue
+            with self._lock:
+                if not self._heap:
+                    continue
+                _due, _seq, guard, idx = heapq.heappop(self._heap)
+            next_due = None
+            with guard._lock:
+                if not guard._removed:
+                    try:
+                        guard._cells[idx].bounce()
+                        guard._hops[idx] += 1
+                        next_due = time.monotonic() + random.uniform(
+                            guard._min_interval, guard._max_interval)
+                    except Exception:
+                        # This is the ONE shared thread for every
+                        # guard's cells in the process - an uncaught
+                        # exception here (e.g. a race with an external
+                        # tamper response touching this same memory)
+                        # would silently stop key rotation for every
+                        # OTHER guard too. Drop this cell, keep going.
+                        next_due = None
+            if next_due is not None:
+                with self._lock:
+                    self._seq += 1
+                    heapq.heappush(self._heap, (next_due, self._seq, guard, idx))
+
+
+_cell_scheduler = _GlobalCellScheduler()
+
+
 class SplitKeyGuard:
     """Compresses a key, splits it into one cell per byte (88 separate
-    locked address-pairs), each cell's hop serviced by ONE shared
-    scheduler thread at that cell's own independently-randomized time
-    - not synchronized with the others, but without 88 separate OS
-    threads. update() rewrites all cells to a new key without
-    recreating any mmap regions or threads."""
+    locked address-pairs), each cell's hop serviced by the process-wide
+    _GlobalCellScheduler at that cell's own independently-randomized
+    time - not synchronized with the others, and without one OS thread
+    per guard (let alone one per cell). update() rewrites all cells to
+    a new key without recreating any mmap regions or threads."""
 
     def __init__(self, key: bytes, min_interval: float = 0.001,
                  max_interval: float = 0.01):
@@ -128,35 +223,9 @@ class SplitKeyGuard:
         self._cells: List[_RawCell] = [_RawCell(b) for b in compressed]
         self._hops = [0] * len(self._cells)
         self._lock = threading.Lock()
-        self._stop = threading.Event()
+        self._removed = False
 
-        now = time.monotonic()
-        self._heap = [
-            (now + random.uniform(min_interval, max_interval), i)
-            for i in range(len(self._cells))
-        ]
-        heapq.heapify(self._heap)
-
-        self._thread = threading.Thread(target=self._scheduler, daemon=True)
-        self._thread.start()
-
-    def _scheduler(self) -> None:
-        while not self._stop.is_set():
-            with self._lock:
-                due_time, idx = self._heap[0]
-            wait = due_time - time.monotonic()
-            if wait > 0:
-                self._stop.wait(min(wait, 0.01))
-                continue
-            with self._lock:
-                if not self._heap:
-                    continue
-                due_time, idx = heapq.heappop(self._heap)
-                self._cells[idx].bounce()
-                self._hops[idx] += 1
-                next_due = time.monotonic() + random.uniform(
-                    self._min_interval, self._max_interval)
-                heapq.heappush(self._heap, (next_due, idx))
+        _cell_scheduler.register(self)
 
     def reconstruct(self) -> bytes:
         with self._lock:
@@ -187,7 +256,7 @@ class SplitKeyGuard:
         return out
 
     def collapse(self) -> None:
-        self._stop.set()
-        self._thread.join(timeout=1)
+        with self._lock:
+            self._removed = True
         for c in self._cells:
             c.collapse()
