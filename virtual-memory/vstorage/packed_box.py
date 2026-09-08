@@ -77,15 +77,16 @@ class PackedFallingBox:
             self._index[name] = (offset, len(data))
         self._paused.clear()
 
-    def get(self, name: str) -> bytes:
+    def get(self, name: str) -> bytearray:
         """Pause, pull just this file's slice out of the shared buffer,
         resume. Everyone else's bytes are untouched and still falling
-        the instant this returns."""
+        the instant this returns. Returns a bytearray (mutable), not
+        bytes, so the caller can secure_zero() it after use."""
         self._paused.set()
         with self._lock:
             offset, length = self._index[name]
             active = self._box_a if self._active == "a" else self._box_b
-            out = bytes(active[offset:offset + length])
+            out = bytearray(active[offset:offset + length])
         self._paused.clear()
         return out
 

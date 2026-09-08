@@ -50,12 +50,16 @@ class FallingBox:
                     self._active = "a"
                 self._hops += 1
 
-    def snapshot(self) -> bytes:
-        """Pause falling, copy out the currently-active buffer, resume."""
+    def snapshot(self) -> bytearray:
+        """Pause falling, copy out the currently-active buffer, resume.
+        Returns a bytearray, not bytes - bytes is immutable, so a
+        caller could never actually zero their own copy after using
+        it (secure_falling_box.secure_zero() needs this to be
+        mutable)."""
         self._paused.set()
         with self._lock:
             active = self._box_a if self._active == "a" else self._box_b
-            out = bytes(active)
+            out = bytearray(active)
         self._paused.clear()
         return out
 
