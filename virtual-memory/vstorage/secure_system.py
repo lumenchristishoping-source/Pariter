@@ -62,7 +62,7 @@ from typing import Dict
 from .chunked_secure_box import ChunkedSecureBox, make_process_nondumpable
 from .distributed_key import DistributedTrustGroup
 from .process_watchdog import ProcessWatchdog
-from .splitter import SplitResult, split_bytes, split_file
+from .splitter import FromFile, SplitResult, piece_size, split_bytes, split_file
 
 Piece = str
 
@@ -108,6 +108,19 @@ class SecureVirtualStorage:
         result = split_bytes(raw, name_hint)
         return self._hold(result, name=name_hint)
 
+    def _make_box(self, piece, on_new_guard) -> ChunkedSecureBox:
+        """A splitter.Piece is either plain bytes (small, already in
+        RAM - fine to hold as one object) or a FromFile marker (this
+        piece mirrors a file on disk and should be streamed straight
+        in via ChunkedSecureBox.from_file() - the difference between
+        a 40GB file needing ~40GB+ just to start vs. staying bounded
+        by chunk size, the same primitive already proven at 12GB)."""
+        if isinstance(piece, FromFile):
+            return ChunkedSecureBox.from_file(piece.path, trust_group=self._trust_group,
+                                               on_new_guard=on_new_guard)
+        return ChunkedSecureBox(piece, trust_group=self._trust_group,
+                                 on_new_guard=on_new_guard)
+
     def _hold(self, result: SplitResult, name: str) -> str:
         file_id = uuid.uuid4().hex
         # Real gap found and fixed: the watchdog used to only ever
@@ -121,10 +134,8 @@ class SecureVirtualStorage:
         # original one-time registration below.
         on_new_guard = self._watchdog.add_regions if self._watchdog else None
         boxes = {
-            "content": ChunkedSecureBox(result.content, trust_group=self._trust_group,
-                                         on_new_guard=on_new_guard),
-            "structure": ChunkedSecureBox(result.structure, trust_group=self._trust_group,
-                                           on_new_guard=on_new_guard),
+            "content": self._make_box(result.content, on_new_guard),
+            "structure": self._make_box(result.structure, on_new_guard),
             "metadata": ChunkedSecureBox(result.metadata, trust_group=self._trust_group,
                                           on_new_guard=on_new_guard),
         }
@@ -133,8 +144,8 @@ class SecureVirtualStorage:
             for box in boxes.values():
                 regions.extend(box.regions())
             self._watchdog.add_regions(regions)
-        original_size = (len(result.content) if result.reconstruct_from == "content"
-                          else len(result.structure))
+        original_size = (piece_size(result.content) if result.reconstruct_from == "content"
+                          else piece_size(result.structure))
         with self._lock:
             self._held[file_id] = _Held(
                 boxes=boxes, reconstruct_from=result.reconstruct_from,
