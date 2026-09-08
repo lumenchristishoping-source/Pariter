@@ -147,6 +147,44 @@ class ChunkedSecureBox:
         ] or [_Chunk(b"", current_key)]
         self._on_next = [False] * len(self._chunks)
 
+        self._start_falling()
+
+    @classmethod
+    def from_file(cls, path: str, chunk_size: int = DEFAULT_CHUNK_SIZE,
+                  hop_interval: float = 0.0, trust_group=None) -> "ChunkedSecureBox":
+        """Streams the file in from disk, chunk_size bytes at a time -
+        never holds the whole file as one Python object. __init__
+        needs the full file as `data: bytes` first, which for a small
+        piece (a typical file's structure/metadata) is fine, but for
+        a truly huge file means needing 2x its size in RAM just to
+        start (the file wherever it already lives, plus this copy).
+        This path never pays that - peak RAM is bounded by one
+        chunk_size buffer plus whatever the compressed+encrypted
+        output ends up being, regardless of how large the source is."""
+        self = cls.__new__(cls)
+        self._data_len = os.path.getsize(path)
+        self._chunk_size = chunk_size
+        self._hop_interval = hop_interval
+        self._trust_group = trust_group
+
+        current_key = AESGCM.generate_key(bit_length=256)
+        self._current_guard = SplitKeyGuard(current_key)
+        self._next_guard = SplitKeyGuard(self._next_key(current_key))
+
+        chunks: List[_Chunk] = []
+        with open(path, "rb") as f:
+            while True:
+                piece = f.read(chunk_size)
+                if not piece:
+                    break
+                chunks.append(_Chunk(piece, current_key))
+        self._chunks = chunks or [_Chunk(b"", current_key)]
+        self._on_next = [False] * len(self._chunks)
+
+        self._start_falling()
+        return self
+
+    def _start_falling(self) -> None:
         self._lock = threading.Lock()
         self._hops = 0
         self._next_chunk = 0
