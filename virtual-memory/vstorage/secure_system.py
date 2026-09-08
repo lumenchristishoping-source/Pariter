@@ -198,6 +198,30 @@ class SecureVirtualStorage:
             which = held.reconstruct_from
         return bytes(held.boxes[which].snapshot())
 
+    def retrieve_to_file(self, file_id: str, dest_path: str, which: Piece | str = "full") -> None:
+        """Same output as retrieve(), but never assembles the whole
+        file as one Python object first. Writes straight to dest_path
+        in chunk_size pieces - at any instant, at most one chunk's
+        worth of real plaintext exists, and only for as long as it
+        takes to write it out. Symmetric with save()'s from_file():
+        that fixed "needs the whole file in RAM just to get IN",
+        this fixes "needs the whole file in RAM just to get back OUT".
+
+        This bounds exposure, it does not eliminate it - something
+        still has the plaintext the instant it's written (that's true
+        of any encryption-at-rest system, retrieving a file always
+        means it becomes usable). The real win here is shrinking WHAT
+        exists in the open at once from "the whole file, for however
+        long the caller holds it" down to "one chunk, briefly" -
+        write dest_path itself to somewhere already protected (an
+        encrypted volume, a secured upload) for that to matter."""
+        held = self._held[file_id]
+        if which == "full":
+            which = held.reconstruct_from
+        box = held.boxes[which]
+        with open(dest_path, "wb") as f:
+            box.stream_to(f.write)
+
     def original_size_bytes(self, file_id: str) -> int:
         return self._held[file_id].original_size
 

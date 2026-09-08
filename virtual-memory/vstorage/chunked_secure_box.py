@@ -386,6 +386,35 @@ class ChunkedSecureBox:
         self._paused.clear()
         return out[:self._data_len]
 
+    def stream_to(self, write) -> None:
+        """Same data as snapshot(), but never holds more than ONE
+        chunk's plaintext at a time - decrypt a chunk, hand it to
+        `write` (a callable taking bytes, e.g. an open file's .write),
+        immediately let it go, move to the next. snapshot() builds one
+        bytearray the size of the whole file; for a huge file being
+        retrieved, that means a huge exposed buffer for as long as the
+        caller holds it. This bounds the exposed plaintext to one
+        chunk_size at a time, same principle as from_file() on the way
+        in - the caller's `write` is expected to send it straight
+        somewhere already protected (disk, an encrypted destination, a
+        socket) rather than accumulate it either."""
+        self._paused.set()
+        remaining = self._data_len
+        try:
+            with self._lock:
+                current_key = self._current_guard.reconstruct()
+                next_key = self._next_guard.reconstruct()
+                for chunk, on_next in zip(self._chunks, self._on_next):
+                    if remaining <= 0:
+                        break
+                    key = next_key if on_next else current_key
+                    plaintext = chunk.decrypt(key)
+                    piece = plaintext[:min(chunk.plain_len, remaining)]
+                    write(piece)
+                    remaining -= len(piece)
+        finally:
+            self._paused.clear()
+
     def collapse(self) -> None:
         with self._lock:
             self._removed = True
