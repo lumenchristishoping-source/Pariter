@@ -19,6 +19,16 @@ everything built and tested in this project:
   Step 5 (Death):           collapse_all() / process end - matches
       HANDBOOK.md section 4 exactly, now hardened at every step
 
+  Optional: distributed trust (distributed_key.py). Off by default -
+  real cost, only worth it if you actually want this property. When
+  on, every hop's key ratchet mixes in a secret freshly reconstructed
+  from K of N separate processes (Shamir's Secret Sharing), instead of
+  ratcheting purely from local state. Closes a real gap found while
+  building this: a purely local ratchet is a deterministic hash chain,
+  so a captured key predicts every FUTURE key too - verified directly,
+  not assumed. With distributed trust on, a one-time full capture of
+  this machine no longer lets an attacker compute what comes next.
+
 Honest, tested scope and limits:
   - Small-to-medium files only (tested up to a few MB cleanly). A 50MB
     payload through CombinedSecureBox measured +250MB RAM per hop even
@@ -45,6 +55,7 @@ from dataclasses import dataclass
 from typing import Dict
 
 from .combined_secure_box import CombinedSecureBox, make_process_nondumpable
+from .distributed_key import DistributedTrustGroup
 from .process_watchdog import ProcessWatchdog
 from .splitter import SplitResult, split_bytes, split_file
 
@@ -69,7 +80,8 @@ class SecureVirtualStorage:
     this process killed.
     """
 
-    def __init__(self, watch_for_tampering: bool = True, kill_on_tamper: bool = True):
+    def __init__(self, watch_for_tampering: bool = True, kill_on_tamper: bool = True,
+                 use_distributed_trust: bool = False, trust_k: int = 3, trust_n: int = 5):
         make_process_nondumpable()
         self._held: Dict[str, _Held] = {}
         self._lock = threading.Lock()
@@ -77,6 +89,9 @@ class SecureVirtualStorage:
         if watch_for_tampering:
             self._watchdog = ProcessWatchdog(target_pid=os.getpid(),
                                               kill_target=kill_on_tamper)
+        self._trust_group = None
+        if use_distributed_trust:
+            self._trust_group = DistributedTrustGroup(k=trust_k, n=trust_n)
 
     # -- save --------------------------------------------------------
 
@@ -91,9 +106,9 @@ class SecureVirtualStorage:
     def _hold(self, result: SplitResult, name: str) -> str:
         file_id = uuid.uuid4().hex
         boxes = {
-            "content": CombinedSecureBox(result.content),
-            "structure": CombinedSecureBox(result.structure),
-            "metadata": CombinedSecureBox(result.metadata),
+            "content": CombinedSecureBox(result.content, trust_group=self._trust_group),
+            "structure": CombinedSecureBox(result.structure, trust_group=self._trust_group),
+            "metadata": CombinedSecureBox(result.metadata, trust_group=self._trust_group),
         }
         if self._watchdog:
             regions = []
@@ -137,3 +152,5 @@ class SecureVirtualStorage:
             self.forget(file_id)
         if self._watchdog:
             self._watchdog.stop()
+        if self._trust_group:
+            self._trust_group.stop()

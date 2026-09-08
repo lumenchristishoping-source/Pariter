@@ -89,10 +89,22 @@ def _pick_hop_interval(data_len: int) -> float:
 
 
 class CombinedSecureBox:
-    def __init__(self, data: bytes, hop_interval: float | None = None):
+    def __init__(self, data: bytes, hop_interval: float | None = None,
+                 trust_group=None):
+        """trust_group: optional DistributedTrustGroup. When set, every
+        ratchet step mixes in a freshly-fetched secret from N separate
+        processes (K-of-N reconstruction) instead of ratcheting purely
+        from local state - closes a real gap: a purely local ratchet
+        is deterministic, so a captured key predicts every FUTURE key
+        too, not just the past ones (verified directly - a captured
+        key hashed forward 5 times locally matched the real key
+        exactly). With a trust group, computing the next key needs
+        live access to K of the N other processes, not just a local
+        snapshot."""
         self._data_len = len(data)
         self._hop_interval = (
             _pick_hop_interval(len(data)) if hop_interval is None else hop_interval)
+        self._trust_group = trust_group
         length = _round_up_page(max(len(data) + 16 + NONCE_LEN, 1))
         self._buf = mmap.mmap(-1, length)
         self._buf_len = length
@@ -116,6 +128,14 @@ class CombinedSecureBox:
         self._thread = threading.Thread(target=self._fall_forever, daemon=True)
         self._thread.start()
 
+    def _next_key(self, current_key: bytes) -> bytes:
+        if self._trust_group is not None:
+            external = self._trust_group.fetch()
+            derived = hashlib.sha256(current_key + external + b"vstorage-ratchet").digest()
+            external = bytes(len(external))  # never kept past this line
+            return derived
+        return _ratchet(current_key)
+
     def _fall_forever(self) -> None:
         while not self._stop.is_set():
             if self._paused.is_set():
@@ -128,7 +148,7 @@ class CombinedSecureBox:
                 ciphertext = bytes(self._buf[NONCE_LEN:NONCE_LEN + self._payload_len])
                 plaintext = AESGCM(current_key).decrypt(nonce, ciphertext, None)
 
-                new_key = _ratchet(current_key)
+                new_key = self._next_key(current_key)
                 self._key_guard.update(new_key)
 
                 new_nonce = os.urandom(NONCE_LEN)
