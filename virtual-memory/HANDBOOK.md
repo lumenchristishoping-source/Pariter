@@ -1247,6 +1247,80 @@ completely for the duration - measured directly: 29 of 75 boxes got
 zero key-rotation hops during a 75-second window where the main
 thread was busy for 69 of those seconds. Before the fix, 75 separate
 threads meant a busy main thread couldn't starve all of them at once;
-after it, the single shared thread can be starved outright. Not yet
-fixed - see `TODO.md` for the planned next step (a small pool of
-fall-scheduler threads instead of exactly one).
+after it, the single shared thread can be starved outright.
+
+**Since fixed** with a small pool (4 workers) instead of exactly one
+shared thread, for both the falling-motion scheduler and the key-cell
+scheduler. Reproduced the exact failure directly, then confirmed the
+fix on the same repro: 0 of 30 boxes stalled across a 46.5s busy
+window, hop counts landing in a tight 107-110 range across all of
+them. Full detail, including two more real bugs found and fixed in
+the watchdog's rotation-tracking along the way (a stale-address gap,
+then the region-table growth its own fix caused): `REBUILD_STATUS.md`.
+
+### Update — streaming both directions, and three ways to hand a file back out
+
+Two more real gaps closed after the above, both found by actually
+building and testing, not by inspection:
+
+**Save() used to need a file's own size in RAM just to start.**
+`ChunkedSecureBox.from_file()` had already proven a 12GB file could be
+held at ~292MB - but only `splitter.py`'s `split_file()`, the REAL
+`save()` entry point, still read a file whole into RAM before
+anything else could happen. Fixed: text-like content and every
+piece's structure now stream straight from disk. Verified on a real
+5GB file through the actual `save()` call: ~195MB peak, not ~5GB.
+
+**retrieve() had the identical problem in reverse** - it built the
+whole reconstructed file as one object before handing it back. Fixed
+with streaming output (`retrieve_to_file()`): decrypt one chunk,
+write it, discard, repeat. Verified on a 3GB file: RAM moved from
+92MB (holding it) to 94MB while streaming the ENTIRE file back out -
+a 2MB delta, not a multi-GB spike.
+
+**Streaming output alone still wrote raw plaintext to the
+destination**, though - bounding *how much* was ever exposed at once,
+not making the destination itself safe if it wasn't already. Added a
+second output mode: `retrieve_to_encrypted_file()` decrypts a chunk
+from storage and immediately re-encrypts it under a fresh transit key
+before it ever reaches the destination - confirmed directly that the
+output file's bytes never contain the original plaintext, searched
+for it, not found. Costs ~27% more time (one real extra AES-GCM pass
+per chunk); RAM is unaffected either way.
+
+**Then found the same gap the whole security arc has been finding
+elsewhere: the key was handed back at the same instant as the file,**
+which means nothing about a timer or a "confirmed departure" check
+prevents someone who's already watching from copying it (see the
+next section for why - it's the same limit as "the process dies with
+everything in it" not reaching data a caller already has). Rather
+than pick one fix, built THREE selectable output tiers on one method,
+`retrieve_to_destination(file_id, dest_path, trust=...)`:
+
+- `trust="trusted"` - plain streaming, fastest, for a destination
+  that's already protected on its own.
+- `trust="untrusted"` - wrapped streaming, key only released after a
+  real `os.fsync()`-confirmed durable write - don't hand out the
+  means to read the file until it has genuinely, durably left.
+- `trust="hostile"` - everything `"untrusted"` does, plus the key
+  itself is never handed back directly - a single-use, time-boxed
+  token instead (`redeem_key()` is a separate, later call).
+
+Verified: all three byte-perfect end to end, single-use enforced on
+the hostile tier (a second redemption attempt is correctly rejected),
+expiry enforced with the right error type (a real bug caught before
+shipping: the cleanup sweep raced the token's own expiry check and
+misreported an expired token as "never existed" - fixed by checking
+each token's own deadline directly).
+
+**The honest limit underneath all of this, worth being direct about:**
+none of these tiers make plaintext stop existing - nothing can,
+decrypting is what makes data usable at all, true of any encryption
+system, not a gap specific to this one. What they actually buy,
+in increasing order: bounded exposure (streaming), a destination that
+never sees plaintext regardless of trust (wrapped), and control over
+*when* and *how many times* the means to read it can be used
+(the token tier) - narrowing the window and the reuse, not sealing it
+shut. A key that has already left this process, into someone else's
+hands, is gone from this process's control the same way the "dies
+with the process" guarantee only ever covered what's *inside* it.
