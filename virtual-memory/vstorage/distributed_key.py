@@ -44,7 +44,7 @@ def _holder_process(x: int, share_bytes: bytes, request_conn) -> None:
     this process does. In a real deployment this would be a network
     service on an actually separate host, not a local process; that
     honest limitation is unavoidable inside a single sandbox."""
-    buf = mmap.mmap(-1, mmap.PAGESIZE)
+    buf = mmap.mmap(-1, mmap.PAGESIZE, flags=mmap.MAP_PRIVATE | mmap.MAP_ANONYMOUS)
     buf[:len(share_bytes)] = share_bytes
     _lock_and_hide(buf)
     while True:

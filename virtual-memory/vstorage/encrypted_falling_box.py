@@ -101,7 +101,7 @@ class EncryptedFallingBox:
     def __init__(self, data: bytes):
         self._data_len = len(data)
         length = _round_up_page(max(len(data) + 16 + NONCE_LEN, 1))  # +16 GCM tag
-        self._buf = mmap.mmap(-1, length)
+        self._buf = mmap.mmap(-1, length, flags=mmap.MAP_PRIVATE | mmap.MAP_ANONYMOUS)
         self._buf_len = length
 
         self._key = bytearray(AESGCM.generate_key(bit_length=256))

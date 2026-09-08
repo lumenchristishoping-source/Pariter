@@ -73,7 +73,7 @@ def secure_zero(buf) -> None:
 class _Chunk:
     def __init__(self, plaintext: bytes, key: bytes):
         length = _round_up_page(len(plaintext) + 16 + NONCE_LEN)
-        self._buf = mmap.mmap(-1, length)
+        self._buf = mmap.mmap(-1, length, flags=mmap.MAP_PRIVATE | mmap.MAP_ANONYMOUS)
         self.plain_len = len(plaintext)
         nonce = os.urandom(NONCE_LEN)
         ct = AESGCM(key).encrypt(nonce, plaintext, None)

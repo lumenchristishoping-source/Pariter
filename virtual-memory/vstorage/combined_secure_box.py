@@ -106,7 +106,7 @@ class CombinedSecureBox:
             _pick_hop_interval(len(data)) if hop_interval is None else hop_interval)
         self._trust_group = trust_group
         length = _round_up_page(max(len(data) + 16 + NONCE_LEN, 1))
-        self._buf = mmap.mmap(-1, length)
+        self._buf = mmap.mmap(-1, length, flags=mmap.MAP_PRIVATE | mmap.MAP_ANONYMOUS)
         self._buf_len = length
 
         initial_key = AESGCM.generate_key(bit_length=256)

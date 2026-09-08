@@ -64,8 +64,15 @@ class _RawCell:
     that cell's own independently-scheduled moment."""
 
     def __init__(self, value: int):
-        self._page_a = mmap.mmap(-1, PAGE_SIZE)
-        self._page_b = mmap.mmap(-1, PAGE_SIZE)
+        # MAP_PRIVATE|MAP_ANONYMOUS explicitly - mmap.mmap(-1, n) alone
+        # defaults to MAP_SHARED, backed by a deleted /dev/zero (visible
+        # as a real path in /proc/pid/maps, counted as RssFile not
+        # RssAnon, and - more seriously - inherited as truly SHARED
+        # rather than copy-on-write across a fork()). Found via a real
+        # 1GB test where RssAnon suspiciously barely moved.
+        _anon = mmap.MAP_PRIVATE | mmap.MAP_ANONYMOUS
+        self._page_a = mmap.mmap(-1, PAGE_SIZE, flags=_anon)
+        self._page_b = mmap.mmap(-1, PAGE_SIZE, flags=_anon)
         self._page_a[0:1] = bytes([value])
         self._active = "a"
         self.protection_status = {

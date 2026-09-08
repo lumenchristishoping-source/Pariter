@@ -95,8 +95,9 @@ class SecureFallingBox:
     def __init__(self, data: bytes):
         length = _round_up_page(len(data))
         self._data_len = len(data)
-        self._box_a = mmap.mmap(-1, length)
-        self._box_b = mmap.mmap(-1, length)
+        _anon = mmap.MAP_PRIVATE | mmap.MAP_ANONYMOUS
+        self._box_a = mmap.mmap(-1, length, flags=_anon)
+        self._box_b = mmap.mmap(-1, length, flags=_anon)
         self._box_a[:len(data)] = data
         self._active = "a"
         self._lock = threading.Lock()
