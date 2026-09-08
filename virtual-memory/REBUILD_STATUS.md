@@ -457,3 +457,44 @@ Conclusion: not a regression. The 0%-detection claim was always
 specifically about data *at rest*; this confirms, correctly, that
 data actively being retrieved is real plaintext in memory, which no
 encryption-at-rest system can avoid.
+
+### The actual encrypted-output path - not just streaming, genuinely encrypted the whole way
+
+The user's response to the investigation above: since plaintext has to
+exist *somewhere* the instant a file is used (true of any system,
+confirmed above, not a flaw), why not encrypt the path the output
+streams through, so nothing ever lands anywhere in the open? The first
+streaming-output fix (`retrieve_to_file()`) only bounded HOW MUCH was
+exposed at once; it still wrote raw plaintext straight to the
+destination. Built the real version:
+`ChunkedSecureBox.stream_to_wrapped()` decrypts a chunk from storage
+and immediately re-encrypts it under a transit key (real AES-GCM,
+fresh nonce per chunk) before it's ever handed to the destination -
+`SecureVirtualStorage.retrieve_to_encrypted_file()` wires this to a
+real file, `decrypt_wrapped_file()` reads it back for whoever holds
+the transit key.
+
+Verified two ways:
+- Directly confirmed the wrapped file's bytes on disk never contain
+  the original plaintext - searched for it, not found, across the
+  whole file.
+- Ran the identical 3GB file through both paths for a clean head-to-
+  head:
+
+| | Plain streaming | Wrapped (encrypted path) |
+|---|---|---|
+| Save (identical either way) | 91.7MB, 153.45s | 91.8MB, 147.09s |
+| Retrieve | 93.8MB, **130.55s** | 94.4MB, **165.68s** |
+| Collapse | 20.8MB | 20.8MB |
+
+RAM: no meaningful difference (still one chunk in flight at a time
+either way). Time: wrapped took **~27% longer** - one real extra
+AES-GCM encrypt per chunk, honest cost, not hidden. Both byte-perfect
+end to end (unwrapped copy's SHA-256 matches the original exactly).
+
+Same honest scope as the plain version, stated plainly to the user
+before and after building: this does not make plaintext never exist -
+nothing can, decrypting is what makes data usable at all. What it
+actually buys is that the DESTINATION itself never sees plaintext,
+regardless of whether that destination is trusted - a different,
+real property from "bounded exposure," not a bigger version of it.

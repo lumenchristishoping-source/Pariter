@@ -86,18 +86,26 @@ Tracking what's next so nothing gets lost between sessions.
       ever exposed at once down to one chunk, briefly, rather than
       the whole file for as long as it's held.
 
+- [x] **Wrap-for-transit output path** — the user's actual ask, which
+      plain streaming output only partly answered: not just "stream
+      out in bounded chunks" but "encrypt the path itself," so nothing
+      written to the destination is ever raw plaintext, regardless of
+      whether that destination is trusted. Built
+      `ChunkedSecureBox.stream_to_wrapped()` / `SecureVirtualStorage.
+      retrieve_to_encrypted_file()` - decrypt from storage, immediately
+      re-encrypt under a transit key (real AES-GCM, fresh nonce per
+      chunk), only THAT ciphertext ever reaches the destination.
+      `decrypt_wrapped_file()` is the matching reader. Verified two
+      ways: confirmed directly that the wrapped file's bytes on disk
+      never contain the original plaintext (searched, not found), and
+      compared head-to-head against plain streaming on the same 3GB
+      file - RAM identical (~94MB either way), retrieval ~27% slower
+      (165.68s vs 130.55s - one real extra AES-GCM pass per chunk,
+      honest cost, not free) - byte-perfect after unwrapping either
+      way.
+
 ## Not yet done
 
-- [ ] **Wrap-for-transit output path.** Discussed, not yet built: an
-      option for `retrieve_to_file()`/a future `retrieve_stream()` to
-      re-encrypt each chunk under a caller-supplied destination key
-      as it streams out, instead of writing raw plaintext - useful
-      specifically when the output is being handed off to another
-      secured system (upload, forward to another service) and this
-      process never needs the plaintext at all. Explicitly does NOT
-      help the ordinary case where the caller in this same process
-      wants to actually read/use the file - that case still needs
-      real plaintext to exist somewhere, same as any system.
 - [ ] PDF/DOCX text extraction still needs to open and parse the
       whole file (pypdf/zipfile) - the structure piece streams fine,
       but content extraction for those two types isn't RAM-bounded
