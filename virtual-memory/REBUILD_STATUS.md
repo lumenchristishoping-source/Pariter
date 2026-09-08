@@ -264,3 +264,86 @@ trusting the compression-ratio estimate blindly):
   safe at this scale for a text-like file, only this
   lower-level primitive is. Wiring a streaming path through
   `splitter.py` is the next real step (see `TODO.md`).
+
+### The "ultimate test" - 24 concurrent files, ~2GB, and the real cost it found (`test_ultimate_multifile.py`)
+
+Everything above tested ONE file at a time (even the 12GB one). This
+test asked a different question: what happens when the system holds
+MANY real files at once, through the real `SecureVirtualStorage`, not
+a lower-level primitive? 24 files (md, txt, json, geojson, csv, log,
+py, pdf, docx, zip - every branch `splitter.py` has), ~2.0GB total,
+generated as real content (not random bytes), 3 with unique markers
+planted in their plaintext for later attack trials.
+
+**First run (before any fix) - stopped intentionally partway through:**
+save phase completed in full (24/24, all correct) but took **3,287s
+(~55 minutes)** - and got SLOWER as more files piled up (14s for the
+1st file, 464s for the 22nd), regardless of file size. 217 background
+threads by the end. Retrieval was, in places, even slower than saving
+(`data_1.json`, 190MB: 444s). Root cause found by inspection, not
+guessing: every file spawned 6 key-guard-scheduler threads + 3
+falling-motion threads (9/file), all competing for Python's one GIL.
+Killed deliberately once the pattern was clear and the fix was
+understood, rather than waiting ~2.5 hours for a result already known.
+
+**The fix** (`vstorage/chunked_secure_box.py`, `vstorage/split_key_guard.py`):
+every guard and every falling box now registers with ONE process-wide
+shared scheduler each (`_GlobalCellScheduler`, `_GlobalFallScheduler`)
+instead of spawning its own thread. Same security property - every
+cell/chunk still separately hidden and independently timed - just
+serviced by 2 background threads total instead of hundreds. Verified
+first with a direct 6-file old-vs-new comparison on identical files:
+threads 55 -> 3, retrieve time 181.5s -> 84.4s (>2x), both fully
+correct. Also found and fixed a real robustness gap along the way: a
+live tamper response (the watchdog zeroing a box's memory mid-hop)
+threw an uncaught exception inside the new shared thread during
+`test_secure_pipeline_e2e.py` - harmless with one thread per box, but
+with ONE shared thread for the whole process, that exception would
+have silently stopped falling motion for every OTHER file too. Both
+schedulers now catch per-item exceptions and keep servicing everyone
+else.
+
+**Second run (with the fix) - completed in full, ~29.6 minutes total:**
+
+| Phase | Before | After | Speedup |
+|---|---|---|---|
+| Save all 24 files | 3,287s | **1,230s** | 2.7x |
+| Mid-run retrieve (1 file) | 153.6s | **16.3s** | 9.4x |
+| Send it back in | 261.3s | **53.2s** | 4.9x |
+| Retrieve all 25 (incl. restored dup) | never finished | **467.8s** | - |
+| Background threads | 217 | **3** | 72x |
+
+- **All 25 final retrievals byte-perfect** (24 files + the one
+  retrieved-and-restored duplicate), 2,079.3MB total, 0 mismatches.
+- **Real attack trials, run by a genuinely separate attacker process**
+  (not the target scanning itself - a first version did that and
+  trivially "found" its own search strings, caught before the full
+  run): 3 full memory-dump trials, 22,774 regions / 517.8MB scanned
+  each, **0 of 3 markers found, every trial**.
+- **The finale**: a real `ptrace_attach` from outside the process,
+  same technique a debugger or memory-dump tool uses. Watchdog
+  detected it and killed the process in **270,741 microseconds**,
+  confirmed via a real `SIGKILL` wait status (a subtler bug caught
+  first: because the attacker and the real parent process were the
+  same process, the naive detection loop was catching the
+  ptrace-induced `SIGSTOP` and mistaking it for the kill - fixed by
+  explicitly skipping `WIFSTOPPED` results and waiting for a real
+  terminal status).
+- RAM: ~485MB holding all 24 files after save, peaking at ~620MB
+  during full retrieval (briefly reconstructing several large files),
+  for ~2GB of source data.
+
+**The honest remaining cost, found in this same run, not smoothed
+over:** the hop-concurrency check - sampled across the mid-run
+retrieve-and-restore window - showed **29 of 75 boxes stalled (0 hops)**
+in a 75.8s window. Traced precisely, not guessed: 69 of those 75.8
+seconds were the main thread doing sustained heavy compression/
+encryption work (the retrieve + re-save of `table_2.csv`), competing
+directly with the one shared falling-motion thread for the GIL - and
+losing. Before the fix, 75 *separate* threads meant a busy main thread
+couldn't starve all of them; after the fix, one thread can be starved
+completely. A real trade: foreground save/retrieve speed for
+background rotation resilience under heavy concurrent load. Next step
+under consideration: a small pool (3-4) of fall-scheduler threads
+instead of exactly one, to recover rotation throughput without
+bringing back the full per-box thread count.

@@ -1216,3 +1216,37 @@ A file put into `SecureVirtualStorage` goes through six steps:
   roughly halve the hop rate compared to local-only key rotation. A
   deliberate, measured trade of speed for the security property, not an
   accident.
+
+### Update — holding many files at once, and what that actually costs
+
+Everything above was verified one file at a time. Holding 24 real
+files concurrently (~2GB total, every file type the splitter
+recognizes) exposed a cost none of the single-file tests could show:
+every file's key guards and falling motion used to spawn their own
+threads, so 24 files meant 217 background threads, ~55 minutes to
+save them all, and retrieval that was in places even slower than
+saving - pure thread contention, not a correctness problem (every
+single byte still came back exact).
+
+Fixed by consolidating: every guard and every falling box now shares
+ONE process-wide scheduler each, instead of each spawning its own
+thread. Verified with a direct before/after comparison on identical
+files (threads 55 → 3, retrieval >2x faster) and confirmed again on
+the full 24-file, ~2GB run: save time cut by 2.7x, individual
+retrievals 9-10x faster, thread count flat at 3 regardless of file
+count, still 100% byte-perfect across all 25 retrievals (including a
+file pulled out mid-run and put back), and the tamper watchdog still
+killed the process in 271 microseconds-scale time at this larger
+scale too.
+
+**The honest new trade this created:** fewer threads means less
+overhead, but also less slack. When the shared falling-motion thread
+has to compete with a sustained heavy operation on the main thread
+(a large file being saved or retrieved), it can lose that fight
+completely for the duration - measured directly: 29 of 75 boxes got
+zero key-rotation hops during a 75-second window where the main
+thread was busy for 69 of those seconds. Before the fix, 75 separate
+threads meant a busy main thread couldn't starve all of them at once;
+after it, the single shared thread can be starved outright. Not yet
+fixed - see `TODO.md` for the planned next step (a small pool of
+fall-scheduler threads instead of exactly one).

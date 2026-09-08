@@ -25,8 +25,29 @@ Tracking what's next so nothing gets lost between sessions.
       tested on a real 12GB file: ~292MB peak RAM the whole way
       through (41x smaller than the file), flat steady state,
       cleaned up completely on collapse. See `REBUILD_STATUS.md`.
+- [x] **Shared schedulers instead of one thread per file** — the
+      24-file "ultimate test" found the real cost of one thread per
+      guard + one per falling box: 217 threads, ~55 min to save 24
+      files, retrieval sometimes slower than saving. Fixed with
+      `_GlobalCellScheduler` / `_GlobalFallScheduler` - every guard
+      and box now shares one process-wide scheduler each. Re-ran the
+      same 24-file test after the fix: 3 threads, save 2.7x faster,
+      full retrieval 9-10x faster per file, still 100% byte-perfect.
+      See `REBUILD_STATUS.md`.
 
 ## Not yet done
+
+- [ ] **Fall-scheduler throughput under heavy concurrent load.** The
+      shared-scheduler fix traded background key-rotation resilience
+      for foreground speed: with only ONE fall-scheduler thread, a
+      sustained heavy save/retrieve on the main thread can starve it
+      completely (measured: 29 of 75 boxes got 0 hops during a 75s
+      window dominated by one heavy operation). Before the fix, many
+      separate threads meant a busy main thread couldn't starve all
+      of them at once. Next step to try: a small pool (3-4) of
+      fall-scheduler worker threads instead of exactly one - keeps
+      thread count far below the old per-box count while giving
+      rotation some real headroom against a busy main thread.
 
 - [ ] Wire `ChunkedSecureBox` (large-file support) into
       `secure_system.py` as the default for big payloads - tested
