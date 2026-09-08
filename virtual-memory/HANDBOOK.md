@@ -4,6 +4,9 @@
 **Built on:** Android, Termux, Python 3.12, GCC, Ubuntu 24 container  
 **Hardware tested on:** 1-core machine, ~4 GB RAM  
 **Date of experiments:** September 2026  
+**Last updated:** with the security-hardening + large-file rebuild (see
+Section 17) — the original record below (Sections 1–16) is kept exactly as
+first written; nothing in it was edited or erased.
 
 This handbook is the single authoritative record of Virtual Storage. It covers
 the origin of the idea, every design decision, every experiment run and its real
@@ -11,6 +14,14 @@ measured result, every dead-end and why it failed, the complete final
 architecture with setup steps, security properties, where it competes in the
 market, and where the honest limits are. It is written so that neither Drew nor
 anyone else who reads it ever has to rediscover anything from scratch.
+
+**Where the living docs are:** this handbook records the *original* build.
+Everything built since (encryption, tamper detection, distributed trust,
+large-file chunking) is layered on top — the day-to-day working docs for
+that part are `ARCHITECTURE.md` (how the current system works, step by
+step) and `REBUILD_STATUS.md` (the experiment log for that phase, in the
+same spirit as Section 6 below). Section 17 of this handbook is the short
+version that ties it all back into one story.
 
 ---
 
@@ -32,6 +43,7 @@ anyone else who reads it ever has to rediscover anything from scratch.
 14. The Startup Case (API Keys and Secrets)
 15. The Complete File Index
 16. One-Sentence Summary
+17. What Changed Since — Security & Scale (the rebuild)
 
 ---
 
@@ -495,6 +507,23 @@ type handled correctly.
 simultaneously. Zero disk. Targeted retrieval: content-only for AI tasks,
 structure-only for reconstruction, metadata-only for indexing.
 
+### Experiment 23: 12GB file, streamed in, every form of RAM tracked
+**File:** `vstorage/chunked_secure_box.py` (`from_file()`), `test_12gb_stream.py`
+(part of the rebuild — see Section 17)  
+**What:** A real 12GB markdown file (not synthetic bytes) read straight off
+disk chunk-by-chunk, compressed, encrypted, and set falling — never held as
+one Python object. Retrieval was deliberately skipped (rebuilding a 12GB
+plaintext needs 12GB of RAM by itself, and this sandbox had no swap and
+only ~15GB total). Every RAM field `/proc` reports was sampled at every
+stage, inside a safety-monitored child process that would self-abort if
+usage ever passed 2.5GB.  
+**Result:** Peak RAM to hold and continuously ratchet a 12GB file: **~292MB
+(about 41x smaller than the file)**, flat for the whole steady-state
+window (12,663+ hops, RAM never moved more than 8KB), and released back
+down to ~37MB on collapse. Safety abort never came close to triggering.
+Build took 991 seconds (~16.5 minutes) — the real cost at this size is
+time, at the real shipped compression setting, not memory risk.
+
 ---
 
 ## 7. The Dead-Ends (Tested, Not Just Argued)
@@ -750,6 +779,19 @@ Virtual Storage defeats storage-layer attacks (disk forensics, file system
 analysis) completely and raises the bar significantly against memory-layer
 attacks (process scrapers, RAM forensics), but does not defeat hardware-
 level physical RAM access while the process is running.
+
+### Update — everything above was true of the original prototype (motion
+### alone). The rebuild (Section 17) closed the biggest gap in it:
+
+Motion alone (falling through boxes, no encryption) turned out to be
+**detectable, not just harder to catch** — a real attacker doing a full
+memory dump at one instant, or watching one fixed address, or reading
+slowly in small pieces, found the plaintext 100% of the time across 300+
+real trials. Motion changes *where* data sits, not *what* it looks like
+when caught. This was proven with real attacks, not assumed, and it is
+why the rebuild added real AES-GCM encryption with continuous key
+rotation on top of the falling motion, rather than treating motion as
+sufficient by itself. See Section 17 for the honest before/after numbers.
 
 ---
 
@@ -1060,3 +1102,117 @@ address, delivers only the piece each task actually needs, costs as little as
 0.18MB of RAM to hold 500MB of structured data at rest, and leaves zero
 recoverable trace — on disk, in process memory, or anywhere — when the
 process ends.**
+
+---
+
+## 17. What Changed Since — Security & Scale (the rebuild)
+
+Everything in Sections 1–16 is the original build: splitting, compressing,
+and falling motion. It proved data could be held cheaply and moved
+continuously. What it did **not** prove is that moving data is the same
+as hiding it — that turned out to be false (see the update at the end of
+Section 10), and fixing it, plus making the system hold files far bigger
+than 500MB safely, is what this section covers. Full step-by-step detail
+lives in `ARCHITECTURE.md`; the full experiment log for this phase lives
+in `REBUILD_STATUS.md`. This section is the short, plain version.
+
+### The one system, six steps
+
+There used to be several separate prototype scripts (`combined_full_system.py`,
+`secure_falling_box.py`, `encrypted_falling_box.py`, and others). They've
+been consolidated into **one system**: `vstorage/secure_system.py`
+(`SecureVirtualStorage`), the only thing you should actually use now. The
+old prototypes still exist for reference (`vstorage/superseded/`), each
+kept because it proved one specific thing along the way.
+
+A file put into `SecureVirtualStorage` goes through six steps:
+
+1. **Split** — same as Section 4, Step 1: content / structure / metadata.
+2. **Compress** — same as before: LZMA, once, before anything else touches
+   the piece.
+3. **Encrypt** — new. Each compressed piece is locked with AES-GCM (a
+   modern authenticated cipher — it doesn't just hide the bytes, it also
+   detects if they were tampered with). For large files, the piece is
+   first cut into fixed-size chunks (256KB each) so a huge file never
+   needs to be re-encrypted whole on every tick — only one chunk moves
+   per tick, regardless of file size.
+4. **Fall** — same falling motion as before, but now what's falling is
+   ciphertext, not plaintext, and the *key itself* keeps changing
+   ("ratcheting") every tick via a one-way hash chain — so even catching
+   old ciphertext later is useless once the key has moved on.
+5. **Retrieve on demand** — same shape as Section 4, Step 4: decrypt only
+   the piece asked for, hand it over, wipe the plaintext copy immediately
+   after.
+6. **Death** — same as before, plus one new layer: a **watchdog** running
+   as a separate process (not just a thread — a thread can lose a race
+   under load, a separate process can't) watches for anyone attaching to
+   read this process's memory, and wipes every key and buffer the instant
+   it sees an attempt.
+
+### What's new, in plain terms
+
+- **Real encryption, not just motion.** The original handbook's "no fixed
+  address" defended against knowing *where* data is. It never addressed
+  *what it looks like* once found. AES-GCM does: a full memory dump now
+  finds encrypted noise, not readable data — tested with the exact same
+  three attack styles Section 10 already used (full dump, fixed-address
+  watch, slow chunked read), 100% detection before, 0% after.
+- **A key that keeps moving too.** The encryption key itself changes on a
+  schedule, so a key caught once cannot be used to unlock a snapshot
+  caught earlier or later — only a snapshot and its key caught in the
+  *exact same instant* still work together. Everything else that
+  attacker might be holding (old copies, stale dumps) is already dead.
+- **A backup for the key itself (defense-in-depth, not a trick).** The
+  key is also split byte-by-byte across many separately-hidden pieces
+  (Shamir's Secret Sharing) so no single memory location ever holds the
+  whole key at once. Worth being honest about what this does and doesn't
+  do: it does **not** fool an attacker who understands the system — a
+  knowledgeable attacker who catches all the pieces at once still wins.
+  What it does do is raise the number of things that must be caught
+  *simultaneously* to succeed, which is a real, if familiar, security
+  property (the same idea as multi-signature wallets or split root
+  keys), not a disguise.
+- **A trust layer that doesn't rely on one machine at all.** Beyond the
+  local split, the key can optionally be derived live, tick by tick,
+  from several separate processes (`use_distributed_trust=True`) — a
+  real K-of-N scheme, not just local math. This closes a gap the local
+  version has: a purely local key chain is predictable forward once
+  caught once (it's just repeated hashing); the distributed version
+  isn't, because part of the input comes from outside the process being
+  attacked.
+- **Large files no longer need to fit comfortably in RAM to be held
+  cheaply.** Chunking (step 3 above) is what makes this possible — the
+  cost of holding a file falling and encrypted no longer scales with the
+  file's size, only with the fixed chunk size. Proven at 12GB
+  (Experiment 23, Section 6): ~292MB peak, flat, for a file 41x larger.
+- **Ingesting a huge file without doubling its RAM cost first.**
+  `ChunkedSecureBox.from_file()` reads straight from disk in chunks
+  instead of needing the whole file as one Python object before it can
+  even start. This is what made the 12GB test possible at all. It is
+  *not yet* wired into the main `save()` path for every file type — see
+  the honest gap below.
+
+### The honest limits, stated plainly (nothing hidden)
+
+- **A root-privileged reader who skips the standard attach step is
+  invisible to the watchdog.** The watchdog watches for the normal way
+  of reading another process's memory (`ptrace_attach`). A sufficiently
+  privileged reader can open `/proc/<pid>/mem` directly without that
+  step, and there is no signal to catch — confirmed directly, not
+  theorized. Distributed trust is the honest answer to this, not a
+  faster watchdog: it means no single machine, root or not, ever holds
+  the whole secret to read in the first place.
+- **The real ingestion "front door" isn't fully streaming yet.** The
+  12GB test streamed a file into `ChunkedSecureBox` directly. The actual
+  `SecureVirtualStorage.save()` path most callers would use still goes
+  through `splitter.py`, which reads a file fully into memory before
+  splitting it. For a huge plain-text file this means the *real* save
+  path still costs close to the file's own size in RAM to start, even
+  though the box holding it afterward is cheap. Wiring a true disk-to-
+  storage streaming channel — the "just point it at a file on disk"
+  version — is tracked in `TODO.md` as the next real piece of work, not
+  yet done.
+- **Distributed trust costs speed.** Real round-trips between processes
+  roughly halve the hop rate compared to local-only key rotation. A
+  deliberate, measured trade of speed for the security property, not an
+  accident.

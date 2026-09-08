@@ -19,6 +19,12 @@ Tracking what's next so nothing gets lost between sessions.
       skips `ptrace_attach` is undetectable from inside the process -
       no code fix exists for that; distributed trust is the real
       answer (no single machine ever holds the whole secret).
+- [x] **Streaming ingestion from disk** — built
+      (`ChunkedSecureBox.from_file()`): reads a file chunk-by-chunk,
+      never holds the whole thing as one Python object. Stress
+      tested on a real 12GB file: ~292MB peak RAM the whole way
+      through (41x smaller than the file), flat steady state,
+      cleaned up completely on collapse. See `REBUILD_STATUS.md`.
 
 ## Not yet done
 
@@ -26,5 +32,15 @@ Tracking what's next so nothing gets lost between sessions.
       `secure_system.py` as the default for big payloads - tested
       separately and works, just not connected to the main pipeline
       yet.
+- [ ] **Stream disk → storage all the way through the real front
+      door.** `from_file()` proves the underlying box can ingest a
+      huge file cheaply, but `SecureVirtualStorage.save()` still
+      goes through `splitter.py`'s `split_file()`, which does a full
+      `open(path).read()` first. For plain content-is-the-file types
+      (`.md`, `.json`, `.log`, `.csv`, `.txt`) this is a real,
+      scoped fix - route straight to `from_file()`, skipping the
+      full read. For `.pdf`/`.docx` the text-extraction step itself
+      needs the whole file, so that path stays bounded by the
+      parser library regardless.
 
 Update this list as items are explained, built, and verified.

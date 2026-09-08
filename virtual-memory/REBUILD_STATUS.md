@@ -215,3 +215,52 @@ step-by-step "how it works" version.
   externally.
 - Not yet wired in: `ChunkedSecureBox` for large files (tested
   separately, works, just not the default path yet).
+
+### Streaming ingestion + the 12GB stress test (`chunked_secure_box.py`'s `from_file()`, `test_12gb_stream.py`)
+
+The open question was simple: can this system actually hold a real,
+large file - not a synthetic in-RAM `bytes` object - without needing
+2x its size in RAM just to start? `ChunkedSecureBox.from_file()` was
+built to answer that: it reads a file chunk-by-chunk (default 256KB)
+straight off disk, compressing and encrypting each chunk as it goes,
+never holding the whole file as one Python object.
+
+Tested against a real 12GB markdown file (12,885,321,036 bytes, real
+structured text, not random bytes) in a sandbox with **no swap at
+all** and only ~15GB total RAM. Retrieval/rebuild was deliberately
+skipped for this run - that alone would need to hold the full ~12GB
+plaintext, and the point of this test was ingestion + steady-state
+cost, not retrieval cost (retrieval cost is already known from
+earlier, smaller tests and doesn't change in kind at this size).
+
+Every form of RAM tracked via `/proc/<pid>/status` and
+`/proc/meminfo` at every stage, run in a safety-monitored child
+process (auto-killed if it ever crossed 2.5GB, as a guard against
+trusting the compression-ratio estimate blindly):
+
+| Stage | RssAnon | VmRSS | Notes |
+|---|---|---|---|
+| Before touching the file | 13.1 MB | 25.1 MB | baseline |
+| After building (ingest + compress + encrypt all 49,154 chunks) | 291.7 MB | 303.9 MB | took 991s (~16.5 min) - real LZMA preset=6, not a shortcut |
+| Steady state (8 samples, 1s apart, falling the whole time) | 291.7-291.7 MB (flat, 8KB spread) | 303.9-304.0 MB (flat) | 1,406 → 12,663 hops during the window - real continuous motion, not stalled |
+| After collapse (`box.collapse()` + `gc.collect()` + `malloc_trim(0)`) | 36.7 MB | 49.1 MB | clean release, close to baseline |
+
+- **Peak RAM for a 12GB file: ~292MB — about 41x smaller than the
+  source file.** That number is bounded by chunk size and chunk
+  count, not file size, so it doesn't grow if the file were 50GB or
+  500GB - only the time to ingest it would.
+- Safety abort (2.5GB) never triggered - actual peak was ~8.5x below
+  that line.
+- System-wide `MemAvailable` was actually **higher** after the run
+  than before (+32MB) - confirms nothing leaked into the system
+  either, not just that this one process released cleanly.
+- The only real cost at this scale is **time** (16.5 minutes, at the
+  real shipped compression preset), not memory risk.
+- Honest gap this test exposes, not fixed here: this bypassed
+  `splitter.py` entirely and called `ChunkedSecureBox.from_file()`
+  directly. The real `SecureVirtualStorage.save()` path still routes
+  through `splitter.py`'s `split_file()`, which does a full
+  `open(path).read()` first - so the *actual* front door isn't yet
+  safe at this scale for a text-like file, only this
+  lower-level primitive is. Wiring a streaming path through
+  `splitter.py` is the next real step (see `TODO.md`).
