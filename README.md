@@ -68,6 +68,61 @@ a problem with the system - it's usually one or more of:
 - **A weaker CPU under sustained load**, especially on a phone or
   laptop that thermal-throttles during a multi-minute compression run.
 
+### Environments where the watchdog can't detect anything at all
+
+This is separate from the speed issue above, and more important: the
+watchdog's entire detection signal is `TracerPid` in
+`/proc/<pid>/status`, which the kernel only sets when something
+attaches via `ptrace`. That assumption breaks completely in any
+environment that ITSELF uses `ptrace` to intercept or supervise your
+process - Linux only allows **one** ptrace tracer per process at a
+time, so if something else already holds that slot, `TracerPid` is
+non-zero from the moment your process starts, permanently, not from
+an attack. The watchdog has no way to tell the difference between
+"that's just how this environment works" and "someone is reading my
+memory right now." Not a slower reaction - a structural absence of
+signal, the same category as the root-skips-`ptrace_attach`
+limitation documented below.
+
+**Confirmed broken, tested directly:**
+- **`proot`** (how most people get a real Linux distro - Ubuntu, Debian
+  - inside Termux on Android). Confirmed on a real device this
+  session: `TracerPid` was already non-zero on a plain shell with
+  nothing attached, before running anything of ours at all.
+
+**Same mechanism, so almost certainly broken too - not independently
+tested here, verify with the command below before relying on it:**
+- **`strace` / `ltrace` / `rr`** wrapped around the whole process -
+  these are ptrace-based tracing tools; running this system under one
+  occupies the tracer slot itself.
+- **gVisor (`runsc`) in ptrace-platform mode** - its KVM-platform mode
+  does not have this problem, since that doesn't use ptrace; its
+  ptrace-platform mode does.
+- **Any other ptrace-based sandbox or debugger** - the mechanism is
+  what matters, not the specific tool name. If it intercepts your
+  syscalls via `ptrace`, it's occupying the exact signal this system
+  watches for.
+
+**Not affected, different mechanism, no known conflict:** plain
+Docker/Podman/LXC (namespaces + cgroups, not ptrace), raw Termux
+without proot (a different, separate problem - see `ARCHITECTURE.md`
+if going that route), `qemu-user` cross-architecture emulation,
+`fakeroot` (uses `LD_PRELOAD`, not ptrace).
+
+**Check your own environment before trusting the watchdog in it** -
+one line, works anywhere, takes a second:
+
+```
+cat /proc/self/status | grep TracerPid
+```
+
+Run it fresh, nothing else attached. Anything other than
+`TracerPid: 0` means the watchdog's whole detection premise doesn't
+hold there - the plain falling-box storage and the encryption still
+work fine either way, it's specifically the tamper-detection layer
+(main watchdog and distributed-trust holder watchdogs alike, since
+they share this exact mechanism) that has nothing to react to.
+
 ### A 12GB file, held at ~292MB
 
 A single real 12GB markdown file, streamed in chunk-by-chunk

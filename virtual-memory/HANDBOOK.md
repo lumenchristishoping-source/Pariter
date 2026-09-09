@@ -1265,6 +1265,28 @@ A file put into `SecureVirtualStorage` goes through six steps:
   theorized. Distributed trust is the honest answer to this, not a
   faster watchdog: it means no single machine, root or not, ever holds
   the whole secret to read in the first place.
+- **The watchdog has nothing to detect at all inside any environment
+  that itself uses `ptrace` to run you.** Same root cause as the
+  bullet above, different attacker (or no attacker — this happens for
+  free): `TracerPid` is the watchdog's only signal, and Linux only
+  allows ONE ptrace tracer per process at a time. If something else
+  already occupies that slot — because that's just how the
+  environment works, not because anyone attacked anything — `TracerPid`
+  is non-zero from the moment the process starts, permanently, and the
+  watchdog can never tell that apart from a real attack. Confirmed
+  directly on a real device this session: `proot` (how most people get
+  a real Linux distro inside Termux on Android) showed a non-zero
+  `TracerPid` on a plain shell with nothing attached at all. The same
+  mechanism almost certainly breaks it under `strace`/`ltrace`/`rr`
+  wrapped around the whole process, or gVisor's ptrace-platform mode —
+  not independently tested here, but it's the identical conflict, not
+  a different one. Plain containers (Docker/Podman/LXC — namespaces
+  and cgroups, not ptrace) don't have this problem. Anyone can check
+  their own environment in one line, before trusting the watchdog in
+  it: `cat /proc/self/status | grep TracerPid` on a fresh shell —
+  anything other than `TracerPid: 0` means this limitation applies
+  there. See `README.md` for the fuller list of known-affected and
+  known-unaffected environments.
 - **Distributed trust costs speed.** Real round-trips between processes
   roughly halve the hop rate compared to local-only key rotation. A
   deliberate, measured trade of speed for the security property, not an

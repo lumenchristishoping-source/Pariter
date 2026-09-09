@@ -215,6 +215,18 @@ neither installed — no LSM at all, confirmed via
 `/sys/kernel/security/lsm` not existing. Not solvable in software
 alone here.
 
+**A related, separate gap found later, worth stating here too:** the
+watchdog has *nothing to detect at all* inside any environment that
+itself uses `ptrace` to run the target process — `proot` (how most
+people get a real Linux distro inside Termux on Android), confirmed
+directly on a real device. `TracerPid` is the watchdog's only signal,
+and Linux allows only one ptrace tracer per process; if something else
+already holds that slot, `TracerPid` never reads 0, not because of an
+attack, just because of how the environment works. Full list of
+known-affected and known-unaffected environments, plus a one-line
+check for any environment: `README.md`'s "Environments where the
+watchdog can't detect anything at all."
+
 ---
 
 ## Part 9 — the real answer to the unfixable case: `shamir.py` + `distributed_key.py`
