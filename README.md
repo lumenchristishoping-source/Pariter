@@ -48,7 +48,7 @@ used to need roughly a file's own size in RAM just to *start*.
 | | |
 |---|---|
 | Peak RAM during save | **~195MB (26x smaller than the file)** |
-| Save time | 153.45s (real compression + encryption) |
+| Save time | 264.55s (real compression + encryption) |
 | Correctness | byte-perfect |
 
 ### 3GB, streamed back out two ways - plain and fully encrypted-path
@@ -79,7 +79,31 @@ scaling to many files at once.
 | Retrieve one file back | 153.6s | **16.3s** | 9.4x faster |
 | All 25 retrievals (24 + a restored copy) | never finished | **100% byte-perfect** | - |
 | Real cross-process attack trials (3, external process) | - | **0% detection** | - |
-| Watchdog reaction to a real `ptrace_attach` | - | **151-271ms, real SIGKILL** | - |
+| Watchdog reaction to a real `ptrace_attach` | - | **270.7ms, real SIGKILL** | - |
+
+### Distributed trust, actually watched, and actually on separate machines
+
+Splitting the key across N processes (Shamir's Secret Sharing) is only
+as strong as what happens when one of them gets attacked. Found, by
+direct review, that nothing did - then fixed it, twice: once so each
+holder is watched at all, and once so "separate machines" stopped
+being a simulation.
+
+| | |
+|---|---|
+| Attacked holder reacts (local mode, real `ptrace_attack`) | **6-60ms, self-protects and dies** |
+| Main process reacts to a compromised holder | **5-25ms, purely from the holder dying** |
+| Tolerates 1 of 5 holders compromised (below threshold) | **system keeps running, key still reconstructs** |
+| 2 of 5 compromised (meets the default threshold) | **fails closed, same as before** |
+| Holders on a real TLS-authenticated network connection, not shared memory | **same reaction times (~10ms / ~10-25ms), no `/proc` access to the holder needed at all** |
+
+One compromised holder, on its own, gives an attacker **zero** usable
+information about the key - proven directly (see
+`test_shamir_secret_sharing.py`), which is why the system no longer
+kills itself over the first one; this is RAM-only, so a kill always
+means the file is gone completely, and that cost only makes sense once
+an attacker is actually close to succeeding, not the instant a single
+machine is touched.
 
 ---
 
