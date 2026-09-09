@@ -1180,6 +1180,27 @@ A file put into `SecureVirtualStorage` goes through six steps:
   caught once (it's just repeated hashing); the distributed version
   isn't, because part of the input comes from outside the process being
   attacked.
+- **Each of those separate processes is now watched too.** Found by
+  direct review, not by a test failing: the distributed-trust holder
+  processes above had zero tamper detection wired to them — a real
+  `ptrace_attach` on one produced no reaction anywhere, from anything.
+  Fixed: every holder gets its own `ProcessWatchdog` (the parent stands
+  it up, since a daemon process can't spawn its own children — hit
+  that restriction directly while building this), and
+  `DistributedTrustGroup` runs a monitor thread that treats a holder
+  dying outside a clean `stop()` as tamper evidence and kills the whole
+  main process, fail-closed, without waiting for `fetch()` to notice.
+  Verified at real `ptrace_attach` scale
+  (`test_distributed_trust_watchdog.py`): the attacked holder dies in
+  ~40-60ms, the main process reacts and dies ~15-25ms after that.
+  Building this surfaced a genuine Linux ptrace quirk worth recording:
+  when a THIRD PARTY (the attacker, not the holder's real parent)
+  attaches, the kernel routes the stop/exit notification to that
+  attacker first; since the attacker never calls `wait()` on a process
+  it doesn't own, the real parent's own `os.waitpid()` — which is what
+  `Process.is_alive()` uses — reports "no change" forever, even after
+  the holder is a confirmed, permanent zombie. The monitor reads
+  `/proc/<pid>/stat` directly instead, which is immune to this.
 - **Large files no longer need to fit comfortably in RAM to be held
   cheaply.** Chunking (step 3 above) is what makes this possible — the
   cost of holding a file falling and encrypted no longer scales with the

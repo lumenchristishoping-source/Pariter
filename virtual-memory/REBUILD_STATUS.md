@@ -498,3 +498,87 @@ nothing can, decrypting is what makes data usable at all. What it
 actually buys is that the DESTINATION itself never sees plaintext,
 regardless of whether that destination is trusted - a different,
 real property from "bounded exposure," not a bigger version of it.
+
+### Distributed-trust holder processes had no watchdog at all - found by review, not by a test
+
+The user asked directly: if a distributed-trust holder machine is
+compromised, does the watchdog kill anything? Checked
+`distributed_key.py` and `process_watchdog.py` directly rather than
+answer from memory - the honest answer was no. `ProcessWatchdog` only
+ever watches one `target_pid`, always the main process
+(`ProcessWatchdog(target_pid=os.getpid(), ...)` in
+`secure_system.py`). The N holder processes in `DistributedTrustGroup`
+had zero tamper detection wired to them anywhere - a real
+`ptrace_attach` on one produced no reaction, from anything, ever.
+
+Fixed:
+- Each holder now gets its own real `ProcessWatchdog`. It can't spawn
+  one itself - it runs `daemon=True` (so it never outlives whoever
+  started it), and Python refuses to let a daemon process have
+  children at all (`AssertionError: daemonic processes are not
+  allowed to have children` - hit this directly on the first attempt).
+  Fix: the holder sends its share buffer's address back over its
+  pipe right after starting; the PARENT (which can have children)
+  stands up the watchdog from the outside, pointed at the holder's
+  pid.
+- `DistributedTrustGroup` runs a background monitor thread that
+  treats a holder dying outside a clean `stop()` call as tamper
+  evidence and immediately kills the whole main process
+  (`kill_main_on_compromise=True`, wired to `kill_on_tamper` in
+  `SecureVirtualStorage`) - fail-closed, without waiting for the next
+  `fetch()` call to stumble into it.
+- `fetch()` itself also treats a dead pipe (`EOFError` /
+  `BrokenPipeError` / `OSError`) as compromise and raises
+  `TrustGroupCompromised` - defense in depth alongside the monitor
+  thread, in case the monitor hasn't caught up yet.
+
+Building this surfaced a real, non-obvious Linux ptrace bug worth
+recording in its own right: the first implementation used
+`multiprocessing.Process.is_alive()` (which calls plain
+`os.waitpid()`) to detect a holder dying, and it silently never
+worked - `is_alive()` kept reporting the attacked holder as alive
+forever, even though `/proc/<pid>/stat` showed it as a confirmed,
+permanent zombie. Root cause: when a THIRD PARTY (the attacker, not
+the holder's real parent) is the one who `ptrace_attach`es, the
+kernel routes that stop/exit notification to the ATTACKER first. The
+attacker has no reason to ever call `wait()` on a process it doesn't
+own, so it never consumes that notification - and the real parent's
+own `waitpid()` on the same pid then just returns "no change",
+forever. Fixed by reading `/proc/<pid>/stat`'s state field directly
+instead (`Z` = zombie = dead), which reflects real kernel state
+regardless of who has or hasn't reaped it. Same category of gotcha as
+the earlier SIGSTOP-vs-death misdetection bug in the ptrace finale
+test, different mechanism.
+
+Verified end to end with a real `ptrace_attach`, not simulated
+(`test_distributed_trust_watchdog.py`), 3 runs:
+
+| | Run 1 | Run 2 | Run 3 |
+|---|---|---|---|
+| Attacked holder dies | +43.9ms | +59.9ms | +39.9ms |
+| Main process dies | +67.9ms | +83.9ms | +55.9ms |
+| Main ever called `fetch()`? | No | No | No |
+
+Also confirmed: a clean `stop()` call does NOT falsely trigger the
+fail-closed kill, and a real end-to-end save/retrieve through
+`SecureVirtualStorage(use_distributed_trust=True)` still works and is
+byte-perfect with the new watchdogs wired in.
+
+Honest scope: this closes "a compromised holder produces zero
+reaction," not "compromising fewer than k holders is dangerous" - the
+k-of-n math (Part 2/3 above) already made that safe. What was missing
+was any REACTION at all when a holder gets attacked, whether or not
+that attack alone would have succeeded.
+
+One more honest note, found while cleaning up after test runs: the
+fail-closed `SIGKILL` to the main process is uncatchable by design -
+that's the whole point, an attacker mid-exploit can't intercept and
+suppress it. The cost is that the main process's OWN daemon children
+(the other, un-attacked holders and their watchdogs) never get an
+`atexit` chance to clean up either, and become orphans instead of
+dying with it. In a real attack this is moot - the whole application
+is going down anyway. It only matters for repeatedly testing this in
+a sandbox, where it can leak real processes across runs (hit this
+directly: ~140 orphaned, some busy-spinning, accumulated across this
+session's debugging runs, cleaned up with `pkill`). Not a security
+issue, just documented so it isn't a surprise later.

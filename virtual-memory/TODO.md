@@ -104,6 +104,36 @@ Tracking what's next so nothing gets lost between sessions.
       honest cost, not free) - byte-perfect after unwrapping either
       way.
 
+- [x] **Trust-tiered retrieval** — the user's own idea vs. mine,
+      built as two distinct, selectable options rather than merged
+      into one: `retrieve_to_destination(trust=...)` — `"trusted"`
+      plain streaming, `"untrusted"` releases the key only after
+      `os.fsync()` confirms the bytes are durably on the destination
+      (the user's design), `"hostile"` issues a single-use,
+      time-boxed token redeemed separately via `redeem_key()` instead
+      of releasing the key at all. Wired into `secure_system.py`,
+      documented in `HANDBOOK.md`.
+- [x] **Distributed-trust holder processes had no watchdog at all** —
+      found by direct review, not a test failing: `ProcessWatchdog`
+      only ever watched the main process; the N holder processes in
+      `DistributedTrustGroup` had zero tamper detection anywhere. A
+      real `ptrace_attach` on one produced no reaction, from
+      anything. Fixed: each holder gets its own `ProcessWatchdog`
+      (stood up by the parent - a daemon process can't spawn its own
+      children, hit that restriction directly), and a monitor thread
+      in `DistributedTrustGroup` treats a holder dying outside a
+      clean `stop()` as tamper evidence and kills the whole main
+      process, fail-closed, without waiting for `fetch()`. Surfaced a
+      real Linux ptrace quirk along the way: `Process.is_alive()`
+      (plain `os.waitpid()`) never sees a holder killed by a THIRD
+      PARTY attacker as dead, because the kernel routes that
+      notification to the attacker first and the attacker never
+      consumes it - fixed by reading `/proc/<pid>/stat` directly
+      instead. Verified with a real `ptrace_attach`
+      (`test_distributed_trust_watchdog.py`): holder dies in
+      6-60ms, main reacts 5-25ms after that, 100% across repeated
+      runs. See `REBUILD_STATUS.md`.
+
 ## Not yet done
 
 - [ ] PDF/DOCX text extraction still needs to open and parse the

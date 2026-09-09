@@ -116,7 +116,8 @@ class SecureVirtualStorage:
                                               kill_target=kill_on_tamper)
         self._trust_group = None
         if use_distributed_trust:
-            self._trust_group = DistributedTrustGroup(k=trust_k, n=trust_n)
+            self._trust_group = DistributedTrustGroup(
+                k=trust_k, n=trust_n, kill_main_on_compromise=kill_on_tamper)
         self._pending_keys: Dict[str, dict] = {}
         self._key_lock = threading.Lock()
 
