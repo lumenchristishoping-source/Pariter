@@ -1,5 +1,13 @@
-"""THE MAIN SYSTEM (equivalent of HANDBOOK.md's combined_full_system.py):
-split + compress + fall + targeted retrieval, tied together.
+"""The original prototype (equivalent of HANDBOOK.md's
+combined_full_system.py): split + compress + fall + targeted
+retrieval, tied together - motion only, no encryption, no watchdog,
+no distributed trust. Superseded as the actual pipeline to use by
+`secure_system.py`'s `SecureVirtualStorage` (see ARCHITECTURE.md /
+HANDBOOK.md) - kept here because a few standalone experiments
+(`secrets_api.py`, `demo.py`) still build on this directly, and
+because Part 2 of ARCHITECTURE.md's walkthrough is the tested proof
+that motion alone is NOT security, which is exactly what this class
+demonstrates.
 
     from vstorage.system import VirtualStorage
 

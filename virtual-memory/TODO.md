@@ -224,8 +224,47 @@ Tracking what's next so nothing gets lost between sessions.
       to Part 6 on `CombinedSecureBox` being superseded, and 4 new
       parts (11-14) added covering everything built since. See
       `REBUILD_STATUS.md`. Prompted the file-by-file audit below.
-- [ ] **Full staleness audit across every file, not just
-      `ARCHITECTURE.md`** — in progress, see the audit findings this
-      entry gets updated with once the sweep finishes.
+- [x] **Full staleness audit across every file, not just
+      `ARCHITECTURE.md`** — every doc file and every non-superseded
+      `vstorage/*.py` docstring/comment checked against the real
+      current code. Found and fixed:
+      - `HANDBOOK.md` Section 17 had a bullet claiming the real
+        `save()` front door "isn't fully streaming yet" - false, and
+        directly contradicted later in the SAME document by the
+        section that documents the actual fix. Removed the stale
+        bullet.
+      - `REBUILD_STATUS.md` referenced a parameter,
+        `kill_main_on_compromise`, that no longer exists anywhere in
+        the codebase - renamed to `kill_threshold` earlier this
+        session when the compromise-tolerance feature was built.
+        Fixed the reference, and added forward-pointer notes to two
+        earlier chronological log entries (the pre-streaming-fix
+        "not yet wired in" notes) so a reader skimming from the top
+        doesn't form a false current impression from an honestly
+        chronological log.
+      - Same stale parameter name in a code comment in
+        `test_distributed_trust_watchdog.py` - fixed.
+      - `vstorage/__init__.py` only exported the original, unhardened
+        `VirtualStorage` - `from vstorage import ...` gave no
+        indication `SecureVirtualStorage` (the actual pipeline every
+        doc calls "the one to use") even existed at the package
+        level. Fixed to export both, with a comment explaining why
+        both still exist.
+      - `vstorage/system.py`'s module docstring still called itself
+        "THE MAIN SYSTEM" - true before `secure_system.py` existed,
+        misleading now. Rewritten to correctly frame it as the
+        original, superseded prototype, kept because a couple of
+        standalone experiments still build on it directly and because
+        it's the tested proof (ARCHITECTURE.md Part 2) that motion
+        alone isn't security.
+      - Everything else checked out: `ARCHITECTURE.md` (just fixed)
+        matched current code throughout; `vstorage/superseded/`
+        correctly makes no claims about being current; the dozen or
+        so standalone-experiment modules not touched this session
+        (`falling_box.py`, `packed_box.py`, `packed_system.py`,
+        `layer_streaming.py`, `measure.py`, `measure_full.py`,
+        `self_healing.py`, `sharing.py`, `sharing_tracked.py`,
+        `splice_stealth.py`, `tamper_watchdog.py`) all correctly
+        self-describe as the older, standalone prototypes they are.
 
 Update this list as items are explained, built, and verified.

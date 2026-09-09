@@ -44,8 +44,9 @@ def main() -> None:
         f.write(CHILD_SCRIPT.format(vstorage_dir=vstorage_dir))
 
     # new session/process group: lets cleanup below kill the WHOLE
-    # tree in one shot. Needed because kill_main_on_compromise's
-    # SIGKILL is uncatchable - the main process's daemon children
+    # tree in one shot. Needed because the fail-closed SIGKILL that
+    # fires on reaching kill_threshold is uncatchable - the main
+    # process's daemon children
     # (the other holders + their watchdogs) never get an atexit
     # chance to clean up and would otherwise leak as orphans. Found
     # this the hard way: an earlier version of this test only killed

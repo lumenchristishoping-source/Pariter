@@ -1265,16 +1265,6 @@ A file put into `SecureVirtualStorage` goes through six steps:
   theorized. Distributed trust is the honest answer to this, not a
   faster watchdog: it means no single machine, root or not, ever holds
   the whole secret to read in the first place.
-- **The real ingestion "front door" isn't fully streaming yet.** The
-  12GB test streamed a file into `ChunkedSecureBox` directly. The actual
-  `SecureVirtualStorage.save()` path most callers would use still goes
-  through `splitter.py`, which reads a file fully into memory before
-  splitting it. For a huge plain-text file this means the *real* save
-  path still costs close to the file's own size in RAM to start, even
-  though the box holding it afterward is cheap. Wiring a true disk-to-
-  storage streaming channel — the "just point it at a file on disk"
-  version — is tracked in `TODO.md` as the next real piece of work, not
-  yet done.
 - **Distributed trust costs speed.** Real round-trips between processes
   roughly halve the hop rate compared to local-only key rotation. A
   deliberate, measured trade of speed for the security property, not an

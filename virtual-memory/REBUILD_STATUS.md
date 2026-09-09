@@ -213,8 +213,12 @@ step-by-step "how it works" version.
 - Tested end-to-end on a real 49-page PDF: byte-perfect, PDF re-opens
   and reads correctly, real attack detected and wiped, verified
   externally.
-- Not yet wired in: `ChunkedSecureBox` for large files (tested
-  separately, works, just not the default path yet).
+- Not yet wired in, at this point in the build: `ChunkedSecureBox` for
+  large files (tested separately, works, just not the default path
+  yet). **This got fixed later in this same log** - see "Closing the
+  gaps found above: scheduler pool, watchdog fixes, and full
+  streaming both ways" further down; by the time you're reading this,
+  `ChunkedSecureBox` IS the default path.
 
 ### Streaming ingestion + the 12GB stress test (`chunked_secure_box.py`'s `from_file()`, `test_12gb_stream.py`)
 
@@ -256,14 +260,16 @@ trusting the compression-ratio estimate blindly):
   either, not just that this one process released cleanly.
 - The only real cost at this scale is **time** (16.5 minutes, at the
   real shipped compression preset), not memory risk.
-- Honest gap this test exposes, not fixed here: this bypassed
-  `splitter.py` entirely and called `ChunkedSecureBox.from_file()`
-  directly. The real `SecureVirtualStorage.save()` path still routes
-  through `splitter.py`'s `split_file()`, which does a full
-  `open(path).read()` first - so the *actual* front door isn't yet
-  safe at this scale for a text-like file, only this
-  lower-level primitive is. Wiring a streaming path through
-  `splitter.py` is the next real step (see `TODO.md`).
+- Honest gap this test exposes, not fixed here (at this point in the
+  log): this bypassed `splitter.py` entirely and called
+  `ChunkedSecureBox.from_file()` directly. The real
+  `SecureVirtualStorage.save()` path still routes through
+  `splitter.py`'s `split_file()`, which does a full `open(path).read()`
+  first - so the *actual* front door isn't yet safe at this scale for
+  a text-like file, only this lower-level primitive is. **Fixed later
+  in this same log** - see "Closing the gaps found above: scheduler
+  pool, watchdog fixes, and full streaming both ways" further down;
+  `splitter.py`'s `FromFile` marker closes exactly this gap.
 
 ### The "ultimate test" - 24 concurrent files, ~2GB, and the real cost it found (`test_ultimate_multifile.py`)
 
@@ -523,10 +529,11 @@ Fixed:
   pid.
 - `DistributedTrustGroup` runs a background monitor thread that
   treats a holder dying outside a clean `stop()` call as tamper
-  evidence and immediately kills the whole main process
-  (`kill_main_on_compromise=True`, wired to `kill_on_tamper` in
-  `SecureVirtualStorage`) - fail-closed, without waiting for the next
-  `fetch()` call to stumble into it.
+  evidence and immediately kills the whole main process (this first
+  version killed on ANY single compromise - later replaced with a
+  configurable `kill_threshold`, see the compromise-tolerance entry
+  further down) - fail-closed, without waiting for the next `fetch()`
+  call to stumble into it.
 - `fetch()` itself also treats a dead pipe (`EOFError` /
   `BrokenPipeError` / `OSError`) as compromise and raises
   `TrustGroupCompromised` - defense in depth alongside the monitor
