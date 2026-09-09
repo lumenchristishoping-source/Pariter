@@ -117,12 +117,32 @@ class DistributedTrustGroup:
     reconstructed transiently, K-of-N, each time fetch() is called,
     and the caller is expected to use it immediately and not persist
     it (same discipline as everything else in this project - a value
-    that exists only for the instant it's needed)."""
+    that exists only for the instant it's needed).
 
-    def __init__(self, k: int = 3, n: int = 5, kill_main_on_compromise: bool = True):
+    How hard a single compromised holder should be treated is a real
+    trade-off, not an obvious call - made a switch (kill_threshold)
+    instead of picking one answer silently. This system is RAM-only:
+    killing the main process ALWAYS means the file it's holding is
+    gone, completely, with no fallback. And a single compromised
+    holder, on its own, gives an attacker literally ZERO information
+    about the secret - proven directly in
+    test_shamir_secret_sharing.py Part 2: every one of the 256
+    possible byte values is equally consistent with what they've got,
+    below the k threshold. So killing everything over an event that
+    carries zero actual risk, by itself, is a real cost (guaranteed
+    total data loss) for no real security benefit in that specific
+    case. Default here reflects that: react hard, but only kill once
+    we're ONE compromise away from an attacker actually being able to
+    reconstruct anything (k-1), not on the very first one. Pass
+    kill_threshold=1 for the old, maximally paranoid instant-kill
+    behavior, or kill_threshold=0 to never auto-kill at all (fetch()
+    still fails on its own once too few holders remain alive - that
+    part isn't a policy choice, it's just no longer possible)."""
+
+    def __init__(self, k: int = 3, n: int = 5, kill_threshold: int | None = None):
         self.k = k
         self.n = n
-        self._kill_main_on_compromise = kill_main_on_compromise
+        self._kill_threshold = kill_threshold if kill_threshold is not None else max(1, k - 1)
         self._main_pid = os.getpid()
         root_secret = os.urandom(32)
         shares = split_secret(root_secret, k=k, n=n)
@@ -134,7 +154,8 @@ class DistributedTrustGroup:
         # other's messages (found by testing: EOFError / invalid pickle
         # data the moment more than one box used the group at once).
         self._stopping = False
-        self._compromised = False
+        self._compromised_indices: set[int] = set()
+        self._kill_triggered = False
 
         ctx = mp.get_context("fork")
         self._conns = []
@@ -155,13 +176,19 @@ class DistributedTrustGroup:
         self._monitor_thread = threading.Thread(target=self._monitor, daemon=True)
         self._monitor_thread.start()
 
+    @property
+    def compromised_count(self) -> int:
+        return len(self._compromised_indices)
+
     def _monitor(self) -> None:
         """Notices a holder process dying on its own, without waiting
         for the next fetch() to stumble into it. The only way a
         holder dies outside a clean stop() is its own ProcessWatchdog
         killing it after catching a real ptrace_attach - so any
         unexpected exit here is treated as tamper evidence, not a
-        normal failure to shrug off.
+        normal failure to shrug off. Keeps running (does NOT return
+        after the first one) so it can count every holder that goes
+        down, not just react to the first.
 
         Deliberately does NOT use Process.is_alive() - found a real
         Linux ptrace quirk while testing this: is_alive() calls plain
@@ -185,38 +212,52 @@ class DistributedTrustGroup:
         an attacker needs to do anything with a share, without
         competing for the GIL against real work."""
         while not self._stopping:
-            for p in self._processes:
-                if not self._stopping and _is_dead(p.pid):
-                    self._on_holder_compromised()
+            for i, p in enumerate(self._processes):
+                if self._stopping:
                     return
+                if i not in self._compromised_indices and _is_dead(p.pid):
+                    self._on_holder_compromised(i)
             time.sleep(0.02)
 
-    def _on_holder_compromised(self) -> None:
-        if self._compromised:
+    def _on_holder_compromised(self, index: int) -> None:
+        if index in self._compromised_indices:
             return
-        self._compromised = True
-        if self._kill_main_on_compromise:
+        self._compromised_indices.add(index)
+        if self._kill_triggered or self._kill_threshold <= 0:
+            return
+        if len(self._compromised_indices) >= self._kill_threshold:
             # Fail closed, immediately - do not wait for whoever is
-            # holding fetch()'s lock to notice. A trusted holder
-            # machine just went down mid-attack; treat that exactly
-            # like an attack on this process itself.
+            # holding fetch()'s lock to notice. We've now used up the
+            # configured tolerance; treat this exactly like an attack
+            # on this process itself.
+            self._kill_triggered = True
             os.kill(self._main_pid, signal.SIGKILL)
 
     def fetch(self) -> bytes:
         """Reconstructs the root secret fresh, right now, from K of
-        the N holder processes. Costs a real round-trip to each one -
-        this is the honest price of the security property, not free."""
-        if self._compromised:
+        the N *currently alive* holder processes - not always the
+        first K by position, so tolerating a compromised holder below
+        kill_threshold actually keeps working instead of permanently
+        wedging on a holder that's gone. Costs a real round-trip to
+        each one - this is the honest price of the security property,
+        not free."""
+        alive_indices = [i for i in range(self.n) if i not in self._compromised_indices]
+        if len(alive_indices) < self.k:
             raise TrustGroupCompromised(
-                "a trust-group holder process was killed by its own watchdog")
+                f"only {len(alive_indices)} of {self.n} holders alive, "
+                f"need {self.k} to reconstruct")
         with self._lock:
             collected = []
             try:
-                for conn in self._conns[:self.k]:
+                for i in alive_indices[:self.k]:
+                    conn = self._conns[i]
                     conn.send("get_share")
                     collected.append(conn.recv())
             except (EOFError, BrokenPipeError, OSError) as e:
-                self._on_holder_compromised()
+                # Mark the specific holder that just failed right now,
+                # rather than waiting up to 20ms for the monitor
+                # thread's next tick to notice the same thing.
+                self._on_holder_compromised(i)
                 raise TrustGroupCompromised(
                     "lost contact with a trust-group holder mid-fetch") from e
         return combine_shares(collected)

@@ -582,3 +582,62 @@ a sandbox, where it can leak real processes across runs (hit this
 directly: ~140 orphaned, some busy-spinning, accumulated across this
 session's debugging runs, cleaned up with `pkill`). Not a security
 issue, just documented so it isn't a surprise later.
+
+### Compromise tolerance - the user's own question, made a real switch
+
+Immediate follow-up question from the user: if a distributed-trust
+holder machine is compromised and the whole system gets killed, does
+that mean the file is lost? And should the system really kill on the
+FIRST compromised holder, or tolerate a few before reacting that
+hard?
+
+Answered honestly: yes, the file is lost either way - this system is
+RAM-only, killing the main process always means total, permanent loss
+of whatever it's holding, no fallback, no "it's saved somewhere
+safe." Given that, killing everything over the FIRST compromised
+holder is a real cost worth questioning, because (re-confirmed from
+`test_shamir_secret_sharing.py` Part 2) one compromised holder alone
+gives an attacker literally zero usable information about the secret
+- every possible byte value is equally consistent with what they've
+captured, below the k=3 threshold. So the user's instinct (tolerate
+some, kill only once almost all are gone) was right, and became the
+new default rather than staying a hypothetical.
+
+Changed:
+- `DistributedTrustGroup(kill_threshold=...)` - defaults to `k-1`
+  (one compromise away from an attacker actually succeeding), not 1.
+  `kill_threshold=1` restores the old instant-kill posture,
+  `kill_threshold=0` disables auto-kill entirely (fetch() still fails
+  on its own once too few holders remain alive - that part was never
+  a policy choice, just math).
+- `_monitor()` no longer stops after the first compromised holder -
+  it keeps counting every one that goes down, so the threshold logic
+  has real data to react to.
+- `fetch()` was quietly broken for tolerance to even work: it always
+  queried `self._conns[:self.k]`, the first k BY POSITION, not by
+  liveness. A holder tolerated below the threshold would permanently
+  wedge every future fetch() if it happened to be among the first k -
+  fixed to use any k *currently alive* holders instead.
+- `SecureVirtualStorage(trust_kill_threshold=...)` wires this through,
+  kept deliberately independent from `kill_on_tamper` (the main
+  process's own watchdog) - "how hard to react to MY OWN process being
+  attacked" and "how hard to react to a HOLDER's zero-information
+  compromise" are different questions with different right answers,
+  though setting `kill_on_tamper=False` disables auto-kill on the
+  trust side too by default, to match "I don't want automatic kills"
+  meaning that everywhere unless overridden explicitly.
+
+Verified with two real `ptrace_attack` scenarios, not simulated
+(`test_distributed_trust_tolerance.py`):
+
+| | Scenario A: attack 1 of 5 | Scenario B: attack 2 of 5 |
+|---|---|---|
+| kill_threshold (default, k=3) | 2 | 2 |
+| Main process | **survived** | **died** |
+| `fetch()` after the attack | **still works** (from the 4 remaining) | n/a |
+
+Both matched the intended policy exactly. Also re-ran the original
+instant-kill test (`test_distributed_trust_watchdog.py`, explicitly
+passing `kill_threshold=1`) and the full Shamir suite to confirm
+nothing regressed - both still pass, holder death still detected in
+single-digit-to-tens of ms.

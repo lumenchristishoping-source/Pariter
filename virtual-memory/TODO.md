@@ -133,6 +133,26 @@ Tracking what's next so nothing gets lost between sessions.
       (`test_distributed_trust_watchdog.py`): holder dies in
       6-60ms, main reacts 5-25ms after that, 100% across repeated
       runs. See `REBUILD_STATUS.md`.
+- [x] **Compromise tolerance, made a real switch instead of one fixed
+      answer** — the user asked directly: should ANY compromised
+      holder kill the whole system, or only once most are gone? Real
+      trade-off: this system is RAM-only, so killing the main process
+      ALWAYS means total, permanent loss of whatever file it's
+      holding - and a single compromised holder, alone, gives an
+      attacker zero usable information (k=3 needed). Changed the
+      default: `DistributedTrustGroup(kill_threshold=...)` now kills
+      only once `k-1` holders are gone (one compromise away from an
+      attacker actually succeeding), not on the first one -
+      `kill_threshold=1` restores the old instant-kill behavior,
+      `kill_threshold=0` disables auto-kill entirely. Also fixed
+      `fetch()` to use any `k` *currently alive* holders instead of
+      always the first `k` by position, so tolerating a compromise
+      below the threshold actually keeps the system working instead
+      of permanently wedging on a dead holder. Verified with two real
+      `ptrace_attack` scenarios (`test_distributed_trust_tolerance.py`):
+      attacking 1 of 5 holders -> main survives, `fetch()` still
+      works from the remaining 4; attacking 2 of 5 -> main dies, same
+      as before.
 
 ## Not yet done
 

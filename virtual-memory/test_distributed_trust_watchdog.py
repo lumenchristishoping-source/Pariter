@@ -11,7 +11,12 @@ holder processes from the outside, and confirms:
   2. the child ("main") process gets killed too, fast, without ever
      calling fetch() itself - proving this is detected proactively,
      not just the next time someone happens to ask for the secret
-"""
+
+Uses kill_threshold=1 explicitly (the old, maximally paranoid
+instant-kill setting) since this test is specifically about proving
+that reaction path works - see test_distributed_trust_tolerance.py
+for the newer default (tolerate compromises below k-1, since one
+compromised holder alone gives zero usable information)."""
 import ctypes
 import os
 import subprocess
@@ -24,7 +29,7 @@ import sys, os, time
 sys.path.insert(0, {vstorage_dir!r})
 from vstorage.distributed_key import DistributedTrustGroup
 
-group = DistributedTrustGroup(k=3, n=5, kill_main_on_compromise=True)
+group = DistributedTrustGroup(k=3, n=5, kill_threshold=1)
 holder_pids = [p.pid for p in group._processes]
 print(f"{{os.getpid()}} {{','.join(str(p) for p in holder_pids)}}", flush=True)
 time.sleep(10)

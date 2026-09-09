@@ -1188,11 +1188,10 @@ A file put into `SecureVirtualStorage` goes through six steps:
   it up, since a daemon process can't spawn its own children — hit
   that restriction directly while building this), and
   `DistributedTrustGroup` runs a monitor thread that treats a holder
-  dying outside a clean `stop()` as tamper evidence and kills the whole
-  main process, fail-closed, without waiting for `fetch()` to notice.
-  Verified at real `ptrace_attach` scale
+  dying outside a clean `stop()` as tamper evidence, without waiting
+  for `fetch()` to notice. Verified at real `ptrace_attach` scale
   (`test_distributed_trust_watchdog.py`): the attacked holder dies in
-  ~40-60ms, the main process reacts and dies ~15-25ms after that.
+  ~5-60ms.
   Building this surfaced a genuine Linux ptrace quirk worth recording:
   when a THIRD PARTY (the attacker, not the holder's real parent)
   attaches, the kernel routes the stop/exit notification to that
@@ -1201,6 +1200,28 @@ A file put into `SecureVirtualStorage` goes through six steps:
   `Process.is_alive()` uses — reports "no change" forever, even after
   the holder is a confirmed, permanent zombie. The monitor reads
   `/proc/<pid>/stat` directly instead, which is immune to this.
+- **How hard to react to that is a switch, not one fixed answer.**
+  This system is RAM-only — killing the main process always means
+  total, permanent loss of whatever file it's holding, no fallback.
+  And one compromised holder, alone, gives an attacker literally zero
+  usable information (`k` are needed — see
+  `test_shamir_secret_sharing.py` Part 2). So killing everything over
+  an event that carries zero actual risk by itself is a real cost for
+  no real benefit in that specific case. Default:
+  `DistributedTrustGroup` kills the main process only once
+  `kill_threshold` holders are gone, defaulting to `k-1` — one
+  compromise away from an attacker actually being able to reconstruct
+  anything — not on the first one. `kill_threshold=1` restores the
+  old instant-kill posture; `kill_threshold=0` disables auto-kill
+  entirely (only `fetch()` itself fails once too few holders remain —
+  that part isn't a policy choice). `fetch()` was also fixed to use
+  any `k` *currently alive* holders rather than always the first `k`
+  by position, so tolerating a compromise below the threshold
+  actually keeps working instead of wedging on a dead holder.
+  Verified with two real `ptrace_attack` scenarios
+  (`test_distributed_trust_tolerance.py`): attacking 1 of 5 holders —
+  main survives, `fetch()` still works from the remaining 4; attacking
+  2 of 5 — main dies, same as the old behavior.
 - **Large files no longer need to fit comfortably in RAM to be held
   cheaply.** Chunking (step 3 above) is what makes this possible — the
   cost of holding a file falling and encrypted no longer scales with the

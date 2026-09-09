@@ -106,7 +106,8 @@ class SecureVirtualStorage:
     """
 
     def __init__(self, watch_for_tampering: bool = True, kill_on_tamper: bool = True,
-                 use_distributed_trust: bool = False, trust_k: int = 3, trust_n: int = 5):
+                 use_distributed_trust: bool = False, trust_k: int = 3, trust_n: int = 5,
+                 trust_kill_threshold: int | None = None):
         make_process_nondumpable()
         self._held: Dict[str, _Held] = {}
         self._lock = threading.Lock()
@@ -116,8 +117,23 @@ class SecureVirtualStorage:
                                               kill_target=kill_on_tamper)
         self._trust_group = None
         if use_distributed_trust:
+            # Independent from kill_on_tamper on purpose: how hard to
+            # react to a compromised MAIN process (an active attacker
+            # right here, right now) and how hard to react to a
+            # compromised distributed-trust HOLDER (which, alone,
+            # gives an attacker zero usable information - see
+            # DistributedTrustGroup's docstring) are different
+            # questions with different right answers. Defaults to
+            # DistributedTrustGroup's own default (kill only once
+            # trust_k-1 holders are gone) unless kill_on_tamper=False,
+            # in which case auto-killing here is disabled too, to
+            # match "I don't want automatic kills" meaning that
+            # everywhere, not just for the main watchdog.
+            threshold = trust_kill_threshold
+            if threshold is None and not kill_on_tamper:
+                threshold = 0
             self._trust_group = DistributedTrustGroup(
-                k=trust_k, n=trust_n, kill_main_on_compromise=kill_on_tamper)
+                k=trust_k, n=trust_n, kill_threshold=threshold)
         self._pending_keys: Dict[str, dict] = {}
         self._key_lock = threading.Lock()
 
