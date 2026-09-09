@@ -25,6 +25,49 @@ caller uses (not a lower-level primitive tested in isolation), on real
 files, with retrieval verified byte-perfect via full SHA-256 comparison.
 Full detail and raw logs for all of these: `virtual-memory/REBUILD_STATUS.md`.
 
+### The hardware these numbers were measured on
+
+Timing numbers are only useful with the machine they came from attached
+- so here it is, pulled directly from the box these tests actually ran
+on, not estimated:
+
+| | |
+|---|---|
+| CPU | Intel(R) Xeon(R) @ 2.10GHz, **4 cores**, 1 thread/core, KVM-virtualized cloud VM |
+| Cache | 192 KiB L1d, 128 KiB L1i, 8 MiB L2, **260 MiB L3** |
+| Hardware crypto | **AES-NI present**, plus AVX2, AVX-512 (incl. VAES), SHA-NI - real hardware acceleration for the AES-GCM this system uses everywhere |
+| RAM | 16,461,028 KB (**~16.5GB**) total, **0 swap** |
+| Disk | 252GB filesystem (not that it matters - nothing here ever gets written to it) |
+| OS / kernel | Ubuntu 24.04.4 LTS, kernel 6.18.44, `PREEMPT_DYNAMIC`, x86_64 |
+| Sandboxing | KVM hypervisor only - a real Linux kernel underneath, not a ptrace-based sandbox (see below for why that specifically matters) |
+
+**Rough throughput, for comparing your own hardware against this
+baseline** (derived directly from the save times above/below - real
+measurements, not a formula):
+
+| File size | Save time | Rate |
+|---|---|---|
+| 3GB | 153.45s | ~51 sec/GB |
+| 5GB | 264.55s | ~53 sec/GB |
+| 12GB | 991s (16.5 min) | ~83 sec/GB |
+
+So on this hardware, a 1GB file should land somewhere around **45-90
+seconds**. If yours takes meaningfully longer, that's not necessarily
+a problem with the system - it's usually one or more of:
+
+- **A ptrace-based sandbox (e.g. `proot`, common on Android/Termux).**
+  It fakes a chroot by intercepting *every syscall* through `ptrace` -
+  a real context-switch tax on every read/write/crypto call this
+  system makes, on top of everything else. Measured directly: the
+  same workload that takes ~1 minute here took 5+ minutes inside a
+  proot Ubuntu on a phone.
+- **No hardware AES acceleration.** If your `cryptography` package
+  ends up linked against a generic (non-accelerated) build, AES-GCM
+  runs in software instead of using the CPU's AES-NI/crypto
+  extensions - a real difference, not a rounding error.
+- **A weaker CPU under sustained load**, especially on a phone or
+  laptop that thermal-throttles during a multi-minute compression run.
+
 ### A 12GB file, held at ~292MB
 
 A single real 12GB markdown file, streamed in chunk-by-chunk
