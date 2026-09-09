@@ -1,3 +1,8 @@
+*Shock: holding a real 20GB file continuously falling can cost as
+little as ~1.99GB of RAM - and it's never written to disk (ROM/local
+storage) either. See
+[Benchmarks & Accomplishments](#benchmarks--accomplishments).*
+
 # Virtual Storage
 
 A software-only, RAM-based, ephemeral storage system - no disk
@@ -150,7 +155,9 @@ regions instead of one mapping each, cutting mapping count ~2,000x).
 A single real 12GB markdown file, streamed in chunk-by-chunk
 (`ChunkedSecureBox.from_file()`), compressed, encrypted, and kept
 continuously falling - on a sandbox with only ~15GB total RAM and
-**no swap at all**.
+**no swap at all**. Its source file lived in `/dev/shm` (RAM-backed
+tmpfs), not on real disk - the 20GB test above is the one that
+actually streamed from genuine disk.
 
 | | |
 |---|---|
