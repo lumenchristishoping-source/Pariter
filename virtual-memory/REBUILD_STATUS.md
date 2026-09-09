@@ -731,3 +731,26 @@ separate hosts, verified by testing multiple independent OS processes
 talking real TLS over real TCP sockets rather than in-memory Pipes -
 it does not prove multi-host deployment itself, since only one
 machine is available in this sandbox to test on.
+
+### ARCHITECTURE.md had gone stale
+
+User caught it directly: the plain-language walkthrough still
+described `secure_system.py` as using the whole-buffer
+`CombinedSecureBox`, with `ChunkedSecureBox` "not yet wired in" - both
+false as of the streaming work earlier this session. It also had no
+mention at all of streaming save/retrieve, trust-tiered retrieval, the
+distributed-trust holder watchdog fix, compromise tolerance, or real
+network-separated holders - every one of those was built, tested, and
+already logged here and in `HANDBOOK.md`, but never folded back into
+the file that's supposed to be "read this first."
+
+Fixed: corrected Part 10's code example and description to match what
+`secure_system.py` actually does today; added a note to Part 6
+clarifying `CombinedSecureBox` was superseded by `ChunkedSecureBox`
+(moved to `vstorage/superseded/`, not deleted - the tested proof the
+design worked before it was made to scale); added four new parts
+(11-14) covering streaming both directions, the three trust-tiered
+retrieval options, the holder-watchdog fix, and real network
+separation; updated the closing summary paragraph to match. Prompted a
+follow-up: checking every other file in the system for the same kind
+of drift, not just the one file that happened to get caught.

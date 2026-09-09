@@ -214,5 +214,18 @@ Tracking what's next so nothing gets lost between sessions.
       the same way text-like files now are. Not investigated further
       yet; likely bounded by what the parser libraries themselves do
       internally.
+- [x] **`ARCHITECTURE.md` had gone stale** — user caught it directly.
+      Still described `secure_system.py` using the whole-buffer
+      `CombinedSecureBox` with `ChunkedSecureBox` "not yet wired in"
+      (false since the streaming work), and had no mention of
+      streaming save/retrieve, trust-tiered retrieval, the
+      distributed-trust holder watchdog fix, compromise tolerance, or
+      real network separation. Fixed: Part 10 corrected, a note added
+      to Part 6 on `CombinedSecureBox` being superseded, and 4 new
+      parts (11-14) added covering everything built since. See
+      `REBUILD_STATUS.md`. Prompted the file-by-file audit below.
+- [ ] **Full staleness audit across every file, not just
+      `ARCHITECTURE.md`** — in progress, see the audit findings this
+      entry gets updated with once the sweep finishes.
 
 Update this list as items are explained, built, and verified.
