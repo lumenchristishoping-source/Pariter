@@ -285,13 +285,45 @@ class ChunkedSecureBox:
         self._current_guard = SplitKeyGuard(current_key)
         self._next_guard = SplitKeyGuard(self._next_key(current_key))
 
+        # Read in large RAW blocks, not chunk_size at a time - found
+        # running a real 20GB file on real disk, the hard way. A single
+        # forward pass over a huge file lets the kernel's page cache
+        # for the bytes ALREADY read keep growing the whole time
+        # (normal readahead/caching) - we never re-read earlier bytes,
+        # so that cache serves no purpose, but on a no-swap machine it
+        # can still crowd out real allocations. First fix attempt
+        # called posix_fadvise(DONTNEED) after every 256KB chunk -
+        # verified in isolation that fadvise itself works (a single
+        # call over 500MB dropped Cached by exactly 500MB), but
+        # verified DIRECTLY that calling it every 256KB in a tight
+        # loop barely worked at all (+497MB Cached for 500MB read,
+        # same as no fix). Root cause: this disk's readahead window
+        # (`/sys/block/*/queue/read_ahead_kb`) is 8MB - 32x our old
+        # 256KB read size - so the kernel's own readahead heuristic
+        # was re-populating cache ahead of us faster than narrow,
+        # frequent DONTNEED hints could clear it. Real fix: read in
+        # blocks at least as large as that readahead window, fadvise
+        # each whole block in one call (the granularity actually
+        # proven to work), THEN slice it into chunk_size pieces for
+        # the existing per-chunk encryption/falling machinery -
+        # unrelated to and unchanged by this fix.
+        RAW_READ_SIZE = max(chunk_size, 16 * 1024 * 1024)
+
         chunks: List[_Chunk] = []
         with open(path, "rb") as f:
+            fd = f.fileno()
+            offset = 0
             while True:
-                piece = f.read(chunk_size)
-                if not piece:
+                block = f.read(RAW_READ_SIZE)
+                if not block:
                     break
-                chunks.append(_Chunk(piece, current_key))
+                for i in range(0, len(block), chunk_size):
+                    chunks.append(_Chunk(block[i:i + chunk_size], current_key))
+                try:
+                    os.posix_fadvise(fd, offset, len(block), os.POSIX_FADV_DONTNEED)
+                except (AttributeError, OSError):
+                    pass  # not available on this platform - best effort
+                offset += len(block)
         self._chunks = chunks or [_Chunk(b"", current_key)]
         self._on_next = [False] * len(self._chunks)
 
