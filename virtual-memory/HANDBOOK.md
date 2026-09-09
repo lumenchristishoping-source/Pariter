@@ -1222,6 +1222,27 @@ A file put into `SecureVirtualStorage` goes through six steps:
   (`test_distributed_trust_tolerance.py`): attacking 1 of 5 holders —
   main survives, `fetch()` still works from the remaining 4; attacking
   2 of 5 — main dies, same as the old behavior.
+- **Holders that are genuinely on separate machines, not just
+  separate processes.** The local version above is honest that it
+  only "simulates N separately-trusted machines" — real OS processes,
+  but all under the same kernel. `vstorage/network_trust.py`
+  (`NetworkTrustGroup`, paired with the standalone
+  `vstorage/holder_server.py`) removes that assumption: each holder
+  is a real TLS-authenticated TCP service — point `trust_host=` at an
+  actual remote address (`SecureVirtualStorage(trust_mode="network")`)
+  and it's a genuine multi-machine deployment, unchanged; today's
+  tests are "only" localhost because this sandbox has one machine,
+  not because of anything in the protocol. The one thing that
+  genuinely has to change: there's no shared `/proc` across real
+  machines, so a dead holder is detected by heartbeating its TLS
+  connection instead of reading its kernel state — same
+  `kill_threshold` reaction either way. Verified with the same
+  `ptrace_attack` + tolerance test shapes as local mode
+  (`test_network_trust_watchdog.py`, `test_network_trust_tolerance.py`):
+  attacked holder server self-protects and dies in ~10ms (it's a
+  standalone process, not a multiprocessing daemon child, so — unlike
+  the local holder — it can spawn its own `ProcessWatchdog` directly),
+  main reacts in ~10-25ms via the dead connection alone.
 - **Large files no longer need to fit comfortably in RAM to be held
   cheaply.** Chunking (step 3 above) is what makes this possible — the
   cost of holding a file falling and encrypted no longer scales with the

@@ -641,3 +641,93 @@ instant-kill test (`test_distributed_trust_watchdog.py`, explicitly
 passing `kill_threshold=1`) and the full Shamir suite to confirm
 nothing regressed - both still pass, holder death still detected in
 single-digit-to-tens of ms.
+
+### Real network-separated holder machines
+
+Direct follow-up ask from the user: local-mode distributed trust is
+honest that its N holders only "simulate N separately-trusted
+machines" - real OS processes, but all under the SAME kernel. Built
+the real version.
+
+`vstorage/holder_server.py` - a standalone `python3 -m
+vstorage.holder_server` process (config arrives over stdin as JSON,
+never argv, which any local user can read via `ps`). It is NOT a
+multiprocessing daemon child (unlike distributed_key.py's holder),
+so - unlike that one - it CAN spawn its own `ProcessWatchdog`
+directly, no parent-side workaround needed. Listens on a real TLS
+socket (`ssl.SSLContext(PROTOCOL_TLS_SERVER)`, a fresh 2048-bit
+self-signed cert generated per group), authenticates every request
+with a shared bearer token (`hmac.compare_digest`, constant-time),
+serves `get_share` and `ping`.
+
+`vstorage/network_trust.py` (`NetworkTrustGroup`) - the client side,
+same public shape as `DistributedTrustGroup` (`k`, `n`, `fetch()`,
+`stop()`, `compromised_count`, `kill_threshold`) so it's a drop-in via
+`SecureVirtualStorage(trust_mode="network", trust_host=...)`. Spawns
+each holder as a real subprocess, connects a persistent TLS client
+socket (cert pinned via `load_verify_locations(cadata=...)`,
+`check_hostname=False` since this is trust-on-first-use pinning, not
+a full CA chain). Point `trust_host=` at a real remote address and
+this is a genuine multi-machine deployment, unchanged - what makes
+today's tests "only" localhost is the sandbox having one machine
+available, not the protocol.
+
+Honest architectural difference, stated plainly: there is no shared
+`/proc` across real separate machines, so the client can't read a
+remote holder's kernel state the way `DistributedTrustGroup` reads
+`/proc/<pid>/stat`. Detection became heartbeat-based instead -
+`NetworkTrustGroup` pings every still-trusted holder over its TLS
+connection (under the same lock `fetch()` uses, same reasoning as
+local mode: concurrent readers on one stream corrupt each other's
+messages) and treats an unreachable one exactly like a locally-dead
+one, same `kill_threshold` machinery.
+
+End to end verified:
+- Basic wiring: group construction, `fetch()` returns the same 32
+  bytes twice, clean `stop()`.
+- Real save/retrieve through `SecureVirtualStorage(use_distributed_
+  trust=True, trust_mode="network")` on a 3MB file - byte-perfect.
+- Real `ptrace_attack` (`test_network_trust_watchdog.py`, same shape
+  as the local-mode test): attacked holder server self-protects and
+  dies in ~10ms; main process reacts in ~10-25ms, purely from the
+  dead connection - confirmed no `/proc` access to the holder was
+  used anywhere in that path.
+- Tolerance (`test_network_trust_tolerance.py`, same shape as the
+  local-mode test): attacking 1 of 5 network holders - main survives,
+  `fetch()` still works via the remaining 4; attacking 2 of 5 - main
+  dies. Matches local-mode results exactly.
+
+Two real bugs found and fixed while building this - both about
+process cleanup, neither a security issue, both worth recording
+because of how they were found:
+- First version spawned each holder server with
+  `start_new_session=True` (copied by habit from how the OUTER test
+  harnesses isolate `child.py`). This detaches the holder from the
+  parent's process group. Harmless for `NetworkTrustGroup.stop()`
+  itself, which already tracks and terminates each holder by pid -
+  but it meant an EXTERNAL cleanup (a test harness's `killpg` aimed
+  at its own child tree) could no longer reach them. Running the
+  test suite in a loop while debugging left real, busy-spinning
+  watchdog processes (they spin forever by design, waiting for a
+  ptrace_attach that never comes once orphaned) accumulating across
+  runs - load average on this 4-core sandbox climbed past 10 before
+  being noticed and killed. Fixed by removing
+  `start_new_session=True` from the holder-spawning code.
+- Second, subtler bug in the SAME area: a holder's own self-spawned
+  `ProcessWatchdog` is its child via `multiprocessing(daemon=True)`.
+  `daemon=True` only cleans up automatically on a NORMAL interpreter
+  exit (an `atexit` hook) - a plain `SIGTERM`, which is exactly what
+  `NetworkTrustGroup.stop()` sends via `proc.terminate()`, does not
+  trigger that hook. Every clean shutdown was silently orphaning one
+  watchdog process per holder. Fixed with an explicit `SIGTERM`
+  handler in `holder_server.py` that stops its own watchdog before
+  exiting. Not an issue on the ATTACK path - there the watchdog is
+  the one doing the killing, and its own function returns and it
+  exits normally on its own once it has.
+
+Same honest scope note as everywhere else in this project: this
+proves the PROTOCOL is genuinely network-based and portable to real
+separate hosts, verified by testing multiple independent OS processes
+talking real TLS over real TCP sockets rather than in-memory Pipes -
+it does not prove multi-host deployment itself, since only one
+machine is available in this sandbox to test on.

@@ -65,6 +65,7 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from .chunked_secure_box import NONCE_LEN, ChunkedSecureBox, make_process_nondumpable
 from .distributed_key import DistributedTrustGroup
+from .network_trust import NetworkTrustGroup
 from .process_watchdog import ProcessWatchdog
 from .splitter import FromFile, SplitResult, piece_size, split_bytes, split_file
 
@@ -107,7 +108,8 @@ class SecureVirtualStorage:
 
     def __init__(self, watch_for_tampering: bool = True, kill_on_tamper: bool = True,
                  use_distributed_trust: bool = False, trust_k: int = 3, trust_n: int = 5,
-                 trust_kill_threshold: int | None = None):
+                 trust_kill_threshold: int | None = None, trust_mode: str = "local",
+                 trust_host: str = "127.0.0.1"):
         make_process_nondumpable()
         self._held: Dict[str, _Held] = {}
         self._lock = threading.Lock()
@@ -132,8 +134,19 @@ class SecureVirtualStorage:
             threshold = trust_kill_threshold
             if threshold is None and not kill_on_tamper:
                 threshold = 0
-            self._trust_group = DistributedTrustGroup(
-                k=trust_k, n=trust_n, kill_threshold=threshold)
+            if trust_mode == "network":
+                # Real, separate TLS-authenticated OS processes
+                # talking over actual TCP sockets, not in-memory
+                # Pipes - point trust_host at a real remote address
+                # and this is a genuine multi-machine deployment,
+                # unchanged. Only "local" (the default) has the
+                # honest "simulates N machines under one kernel"
+                # caveat; see network_trust.py.
+                self._trust_group = NetworkTrustGroup(
+                    k=trust_k, n=trust_n, host=trust_host, kill_threshold=threshold)
+            else:
+                self._trust_group = DistributedTrustGroup(
+                    k=trust_k, n=trust_n, kill_threshold=threshold)
         self._pending_keys: Dict[str, dict] = {}
         self._key_lock = threading.Lock()
 

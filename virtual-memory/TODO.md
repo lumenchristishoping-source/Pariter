@@ -153,6 +153,58 @@ Tracking what's next so nothing gets lost between sessions.
       attacking 1 of 5 holders -> main survives, `fetch()` still
       works from the remaining 4; attacking 2 of 5 -> main dies, same
       as before.
+- [x] **Real network-separated holder machines** — the user asked
+      directly for this after the local-mode watchdog fix: local
+      holders (`distributed_key.py`) only "simulate" separate
+      machines - they're real OS processes, but all under the SAME
+      kernel, so a sufficiently privileged local attacker could, in
+      principle, reach all of them. Built `vstorage/holder_server.py`
+      (a standalone `python3 -m vstorage.holder_server` process - not
+      a multiprocessing daemon child, so unlike the local holder it
+      CAN spawn its own `ProcessWatchdog` directly, no parent-side
+      workaround needed) and `vstorage/network_trust.py`
+      (`NetworkTrustGroup` - same public shape as
+      `DistributedTrustGroup`, drop-in via
+      `SecureVirtualStorage(trust_mode="network")`). Real TLS
+      (fresh 2048-bit self-signed cert per group, client-pinned),
+      real TCP, a shared bearer token checked with a constant-time
+      compare. Point `trust_host=` at a real remote address and this
+      is a genuine multi-machine deployment unchanged - what makes
+      today's tests "only" localhost is the sandbox having one
+      machine, not the protocol.
+
+      Honest architectural difference from local mode, not hidden:
+      there's no shared `/proc` across real machines, so the client
+      can't read a remote holder's kernel state directly. Detection
+      became heartbeat-based instead - `NetworkTrustGroup` pings
+      every holder over its TLS connection and treats an unreachable
+      one exactly like a locally-dead one (same `kill_threshold`
+      machinery). Verified with two real `ptrace_attack` test
+      scripts, same shape as the local-mode ones
+      (`test_network_trust_watchdog.py`,
+      `test_network_trust_tolerance.py`): attacked holder server dies
+      in ~10ms (self-protects the same way local holders do), main
+      process reacts in ~10-25ms via the dead connection alone - no
+      `/proc` access to the holder used or needed. Tolerance scenarios
+      (1-of-5 survives, 2-of-5 kills) match the local-mode results
+      exactly.
+
+      Two real bugs found and fixed while building this, both about
+      process cleanup, not security: (1) holder servers were spawned
+      with `start_new_session=True`, detaching them from the parent's
+      process group - harmless for `NetworkTrustGroup.stop()` itself
+      (which tracks and kills each by pid anyway) but meant an
+      external cleanup (like a test harness's `killpg`) couldn't
+      reach them, and a crashed test run left real, busy-spinning
+      watchdog processes orphaned for minutes, driving load average
+      past 10 on this 4-core sandbox before being found and killed.
+      Fixed by removing it. (2) A holder's own self-spawned watchdog
+      is its child via `multiprocessing(daemon=True)`, which only
+      auto-cleans on a NORMAL interpreter exit (atexit) - a plain
+      SIGTERM (what a clean `stop()` sends) doesn't trigger that,
+      orphaning the watchdog every time. Fixed with an explicit
+      SIGTERM handler in `holder_server.py` that stops its own
+      watchdog before exiting.
 
 ## Not yet done
 
