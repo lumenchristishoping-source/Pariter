@@ -123,6 +123,28 @@ work fine either way, it's specifically the tamper-detection layer
 (main watchdog and distributed-trust holder watchdogs alike, since
 they share this exact mechanism) that has nothing to react to.
 
+### A 20GB file, genuinely on real disk - through 2 real bugs to a clean pass
+
+The biggest, most rigorously tested file yet - and the only one whose
+source genuinely lived on real disk (the 12GB test below actually used
+`/dev/shm`, RAM-backed, not real disk). 83.6M-feature real GeoJSON,
+streamed straight from disk, no retrieval. Two real bugs found and
+fixed getting here, not glossed over: page cache from a single huge
+sequential read growing unbounded (fixed - read in blocks at least as
+large as the disk's own readahead window), then a second, different
+crash - tens of thousands of separate per-chunk memory mappings
+fragmenting the process's address space badly enough that even a
+small allocation could fail (fixed - pool many chunks into shared
+regions instead of one mapping each, cutting mapping count ~2,000x).
+
+| | |
+|---|---|
+| File size | **20.002GB, all 81,930 chunks built** |
+| RAM held, steady state | **~1.99GB, completely flat** (real content compresses ~10x here - coordinate floats, not prose) |
+| Build time | 79.6 min (real LZMA + AES-GCM, no shortcuts) |
+| RAM after collapse | **~33MB** - clean, near-total release |
+| Safety abort / system-wide leak | neither - never triggered, `MemAvailable` delta -10.2MB across the whole run |
+
 ### A 12GB file, held at ~292MB
 
 A single real 12GB markdown file, streamed in chunk-by-chunk

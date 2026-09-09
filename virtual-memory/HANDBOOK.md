@@ -1251,9 +1251,29 @@ A file put into `SecureVirtualStorage` goes through six steps:
 - **Ingesting a huge file without doubling its RAM cost first.**
   `ChunkedSecureBox.from_file()` reads straight from disk in chunks
   instead of needing the whole file as one Python object before it can
-  even start. This is what made the 12GB test possible at all. It is
-  *not yet* wired into the main `save()` path for every file type — see
-  the honest gap below.
+  even start. This is what made the 12GB test possible at all, and is
+  wired into the real `save()` path everyone uses (see Part 11 in
+  `ARCHITECTURE.md`) via `splitter.py`'s `FromFile` marker.
+- **Two real bugs found and fixed pushing this to a genuine 20GB file
+  on real disk** (not `/dev/shm`, which the 12GB test actually used —
+  real disk exercises real disk I/O, that test didn't). First: a
+  single huge forward read let the kernel's own page cache for
+  already-read bytes keep growing the whole time — this disk's
+  readahead window (8MB) was 32x the old 256KB read size, so narrow
+  per-chunk cache hints couldn't keep up — crashed with a real
+  `MemoryError`, on a no-swap machine, even with `MemAvailable`
+  looking fine. Fixed by reading in blocks at least as large as the
+  readahead window. Second, found only after that fix proved clean and
+  a THIRD crash still happened: every chunk got its own separate
+  `mmap()` — tens of thousands of small, separate mappings fragmenting
+  the process's address space badly enough that even a small
+  allocation could fail, around 57,000-60,000 chunks in, regardless of
+  how much total memory was free. Fixed by pooling many chunks into
+  shared 64MB regions instead of one mapping each (`_ChunkPool`) — cuts
+  mapping count by ~2,000x. Verified end to end: the full 20GB file,
+  all 81,930 chunks, RAM flat at ~1.99GB the whole way, dropping to
+  ~33MB on collapse. Full arc, both bugs, real numbers:
+  `REBUILD_STATUS.md`.
 
 ### The honest limits, stated plainly (nothing hidden)
 
@@ -1287,26 +1307,6 @@ A file put into `SecureVirtualStorage` goes through six steps:
   anything other than `TracerPid: 0` means this limitation applies
   there. See `README.md` for the fuller list of known-affected and
   known-unaffected environments.
-- **A large ingest right after a large write can hit a real allocator
-  failure, on a no-swap machine.** Found running a genuine 20GB file
-  on real disk (not `/dev/shm`, which the earlier 12GB test actually
-  used): `ChunkedSecureBox.from_file()` crashed with a real
-  `MemoryError` inside `lzma.compress()` at ~70% through the file -
-  not our own safety abort, the allocator itself failing. Root cause:
-  starting the ingest immediately after writing the 20GB source file
-  left `MemFree` (memory usable without reclaiming anything) at only
-  ~1.8GB, even though `MemAvailable` (which counts reclaimable page
-  cache) reported ~15.6GB - most of that was the file we'd just
-  written still sitting in cache. With no swap to fall back on, if the
-  kernel can't reclaim cache fast enough to satisfy a real allocation
-  at the exact moment it's requested, `malloc()` fails outright rather
-  than waiting. `MemAvailable` looking fine doesn't guarantee an
-  allocation right now will succeed. Confirmed transient, not a
-  standing problem: memory had settled on its own within minutes.
-  Practical takeaway for anyone hitting this: leave a gap between
-  finishing a large write and starting a large ingest of it, on a
-  no-swap machine specifically - or add swap, which gives the kernel
-  somewhere to put pressure instead of failing an allocation outright.
 - **Distributed trust costs speed.** Real round-trips between processes
   roughly halve the hop rate compared to local-only key rotation. A
   deliberate, measured trade of speed for the security property, not an

@@ -291,24 +291,46 @@ Tracking what's next so nothing gets lost between sessions.
         `self_healing.py`, `sharing.py`, `sharing_tracked.py`,
         `splice_stealth.py`, `tamper_watchdog.py`) all correctly
         self-describe as the older, standalone prototypes they are.
-- [x] **A 20GB file, genuinely on real disk** (the 12GB test's source
-      file actually lived in `/dev/shm` - tmpfs, RAM-backed, not real
-      disk). Built `generate_20gb_geojson.py` (real GeoJSON, 83.6M
-      varied features, 20.002GB, 70 MB/s) and
-      `test_20gb_stream_disk.py` to stream it through
-      `ChunkedSecureBox.from_file()`, no retrieval. First attempt hit
-      a real `MemoryError` inside `lzma.compress()` at ~70.6% through
-      the file - not our own safety abort, the allocator itself
-      failing. Root cause: running immediately after writing a 20GB
-      file left `MemFree` at only ~1.8GB even though `MemAvailable`
-      said ~15.6GB (most of that was reclaimable page cache from the
-      write) - on a no-swap machine, a real allocation can fail
-      outright if the kernel can't reclaim cache fast enough to
-      satisfy it right when it's asked, regardless of what
-      `MemAvailable` reports. Confirmed transient, not a standing
-      problem: memory had already settled within minutes on its own.
-      See `REBUILD_STATUS.md` for full detail; retried once
-      conditions settled, results logged there once that run
-      finishes.
+- [x] **A 20GB file, genuinely on real disk, through 2 real crashes to
+      a clean pass** (the 12GB test's source file actually lived in
+      `/dev/shm` - tmpfs, RAM-backed, not real disk - this one is
+      deliberately on the real ext4 root filesystem). Built
+      `generate_20gb_geojson.py` (real GeoJSON, 83.6M varied features,
+      20.002GB, 70 MB/s) and `test_20gb_stream_disk.py` to stream it
+      through `ChunkedSecureBox.from_file()`, no retrieval.
+
+      **Bug 1, found and fixed:** page cache from the read itself grew
+      unbounded over a single huge forward pass (this disk's readahead
+      window is 8MB, 32x the old 256KB read size, so narrow per-chunk
+      `posix_fadvise` hints couldn't keep up) - crashed with a real
+      `MemoryError` inside `lzma.compress()` around 70% through the
+      file, on a no-swap machine, even though `MemAvailable` looked
+      fine. Fixed by reading in blocks at least as large as the
+      readahead window and `fadvise`-ing each whole block at once -
+      verified directly (a 500MB read dropped `Cached`, not grew it).
+
+      **Bug 2, found immediately after, same symptom, different real
+      cause:** a clean retry (conditions fully settled, ~15.9GB free
+      from the start) crashed identically anyway - which disproved the
+      first diagnosis and forced a second one. Real cause: every
+      `_Chunk` got its own separate `mmap()` - tens of thousands of
+      small, separate memory mappings fragmenting the process's
+      address space badly enough that even a small, fixed-size
+      allocation (lzma's own internal buffer) could fail, consistently
+      around 57,000-60,000 chunks in, regardless of how much free
+      memory looked available. An isolated test proving `_Chunk`
+      construction was clean up to 16,000 chunks was real but
+      incomplete - it simply hadn't reached the actual failure scale.
+      Fixed by pooling many chunks' payloads into shared 64MB mmap
+      regions (`_ChunkPool`) instead of one mapping per chunk - cuts
+      mapping count by ~2,000x.
+
+      **Result - the first of 4 real attempts to fully succeed:** all
+      81,930 chunks built, 20.002GB, in 4,777.76s (79.6 min), RAM held
+      flat at ~1.99GB the whole way (real continuous falling
+      confirmed: 700→5,962 hops across 8 steady-state seconds), and
+      dropped to ~33MB on `collapse()` - clean, near-total release.
+      No safety abort, no system-wide leak. Full detail, both bugs,
+      and the complete real numbers: `REBUILD_STATUS.md`.
 
 Update this list as items are explained, built, and verified.

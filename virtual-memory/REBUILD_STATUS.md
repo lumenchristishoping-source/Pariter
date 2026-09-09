@@ -837,3 +837,101 @@ with total RAM being insufficient - it's a reclaim-speed problem, not
 a size problem. Retried once conditions settled (`free -h` showed
 buff/cache back down from ~12GB to ~167MB, `MemFree` recovered to
 ~15Gi) - results below once that run finishes.
+
+### The retry disproved the first diagnosis - and found the real one
+
+The retry crashed. Identically. Same traceback, same `MemoryError`
+inside `lzma.compress()`, same rough position in the file - despite
+starting from a genuinely clean system (`MemFree` ~15.9GB, not the
+~1.8GB the first crash started from). That single fact ruled out the
+"ran right after a big write" theory outright: this run never touched
+a fresh write, and it broke the same way anyway.
+
+Fixed the readahead/cache problem for real this time (see next
+section) - but a THIRD full run, on a now genuinely fixed cache path
+(`Cached` proven flat, +28KB total across the whole run, confirmed
+live throughout), crashed a third time. Same error. Somewhere in the
+70-75% range of the file, every single time. That ruled out cache
+pressure as the (whole) explanation too, and left a real, unsolved
+mystery: a live, ongoing stall on ONE 16MB block, RAM climbing slowly
+but read progress frozen for 30+ minutes, that didn't match "out of
+memory" (checked directly: `MemFree` 3.3GB+, no cgroup limit
+(`memory.max` = effectively unlimited), `ulimit -v`/`-m` both
+unlimited) and didn't match "content is slow to compress" (checked
+directly: extracted the exact 16MB region, timed `lzma.compress()` on
+every 256KB piece in isolation - 55-84ms each, ~4 seconds total for
+the whole block, completely normal).
+
+Root cause, found by isolating the ACTUAL scale where it broke: an
+isolated test built 16,000 real `_Chunk` objects in a tight loop and
+found completely flat per-chunk cost (38-52ms, no growth, even PAST
+the point where an earlier run had stalled) - genuine, valid evidence
+that `_Chunk` construction itself wasn't the problem AT THAT SCALE.
+But the real crashes were happening around 57,000-60,000 chunks -
+never actually tested. Every `_Chunk` was calling `mmap.mmap()`
+separately for its own tiny buffer - by ~57,000 chunks, that's ~57,000
+separate small memory mappings in one process. Tens of thousands of
+separate VMAs is a real, documented way to fragment a process's
+address space badly enough that even a small, fixed-size allocation
+(lzma's own internal compressor buffer) can fail outright - regardless
+of how much total free memory looks available, since the problem is
+finding a usable slice of address space, not raw memory quantity.
+
+### The fix: pool chunk memory instead of one mmap per chunk
+
+Built `_ChunkPool` in `chunked_secure_box.py`: many chunks' compressed
++encrypted payloads packed into ONE big (64MB) locked+hidden mmap
+region, variable-length and tightly packed (not fixed-size slots,
+which would waste most of a pool's space on real, compressible
+content - this GeoJSON's chunks average ~24KB compressed from a 256KB
+input). `_Chunk` no longer owns its own mapping - it holds
+`(pool, offset, payload_len)` instead, and reads/writes directly into
+its pool's shared buffer. AES-GCM re-encryption always produces
+same-length ciphertext for same-length input, so a chunk's slot never
+needs to grow or move after construction - rotation just overwrites
+bytes in place, unchanged from before.
+
+Cuts the number of separate memory mappings by roughly
+`_POOL_SIZE / average-chunk-size` - about 2,000x for this file's real
+content. Same fix also shrinks `ChunkedSecureBox.regions()` (what gets
+registered with `ProcessWatchdog` and zeroed on a real attack) from
+one entry per CHUNK to one entry per POOL - a second, real win: a 20GB
+file at 256KB chunks means ~82,000 raw chunks, which was dangerously
+close to `ProcessWatchdog`'s own 200,000-region ceiling from a single
+file alone, before this fix.
+
+Verified before trusting it: byte-perfect through both `__init__` and
+`from_file()` paths, byte-perfect after 576 real hops through the live
+shared scheduler (not simulated - the actual background falling
+motion), full e2e/tamper/watchdog test suite passes clean.
+
+### The real 20GB file, complete, for the first time
+
+Fourth attempt, with the pooling fix in place. Watched it live through
+both danger zones - the readahead/cache point (`Cached` stayed flat
+throughout, confirmed at every check) and the ~57,000-60,000 chunk
+mark that killed all three previous attempts (confirmed live: still
+running, still progressing, RAM climbing normally, right through
+70.6% - the exact percentage the very first crash happened at).
+
+**Complete, real result:**
+
+| | |
+|---|---|
+| File size | 20.002GB (21,477,329,222 bytes) |
+| Chunks built | **all 81,930** - the complete file |
+| Build time | 4,777.76s (79.6 min) |
+| RAM held, steady state (8 samples) | **~1.99GB, completely flat** |
+| Compression achieved this content | ~10x smaller than source (GeoJSON's real coordinate floats compress less dramatically than the 12GB markdown test's 41x - the effect flagged as plausible before this test even started) |
+| Real falling motion during sampling | 700 → 5,962 hops |
+| RAM after `collapse()` | **33,384 KB (~32.6MB)** - clean, near-total release |
+| Safety abort triggered | No |
+| System-wide leak | No (`MemAvailable` delta: -10.2MB across the whole run) |
+
+Honest accounting of the whole arc: 4 real attempts, 2 real bugs found
+and fixed (not worked around, not silently retried past), both
+verified with direct, isolated evidence before being trusted - not
+just "it didn't crash this time." The generator, both test scripts,
+and the fix itself are all committed; the 20GB source file itself
+lives only in the scratchpad, disposable, matching this whole
+project's own discipline about not keeping more than what's needed.
