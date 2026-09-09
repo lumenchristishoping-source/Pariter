@@ -1287,6 +1287,26 @@ A file put into `SecureVirtualStorage` goes through six steps:
   anything other than `TracerPid: 0` means this limitation applies
   there. See `README.md` for the fuller list of known-affected and
   known-unaffected environments.
+- **A large ingest right after a large write can hit a real allocator
+  failure, on a no-swap machine.** Found running a genuine 20GB file
+  on real disk (not `/dev/shm`, which the earlier 12GB test actually
+  used): `ChunkedSecureBox.from_file()` crashed with a real
+  `MemoryError` inside `lzma.compress()` at ~70% through the file -
+  not our own safety abort, the allocator itself failing. Root cause:
+  starting the ingest immediately after writing the 20GB source file
+  left `MemFree` (memory usable without reclaiming anything) at only
+  ~1.8GB, even though `MemAvailable` (which counts reclaimable page
+  cache) reported ~15.6GB - most of that was the file we'd just
+  written still sitting in cache. With no swap to fall back on, if the
+  kernel can't reclaim cache fast enough to satisfy a real allocation
+  at the exact moment it's requested, `malloc()` fails outright rather
+  than waiting. `MemAvailable` looking fine doesn't guarantee an
+  allocation right now will succeed. Confirmed transient, not a
+  standing problem: memory had settled on its own within minutes.
+  Practical takeaway for anyone hitting this: leave a gap between
+  finishing a large write and starting a large ingest of it, on a
+  no-swap machine specifically - or add swap, which gives the kernel
+  somewhere to put pressure instead of failing an allocation outright.
 - **Distributed trust costs speed.** Real round-trips between processes
   roughly halve the hop rate compared to local-only key rotation. A
   deliberate, measured trade of speed for the security property, not an

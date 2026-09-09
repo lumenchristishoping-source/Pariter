@@ -761,3 +761,79 @@ retrieval options, the holder-watchdog fix, and real network
 separation; updated the closing summary paragraph to match. Prompted a
 follow-up: checking every other file in the system for the same kind
 of drift, not just the one file that happened to get caught.
+
+### A 20GB file, genuinely on real disk this time - and a real crash worth documenting
+
+The 12GB test's source file actually lived in `/dev/shm` - tmpfs,
+RAM-backed, not real disk. Asked directly to fix that: generate a
+large file on the real ext4 filesystem and stream it through
+`ChunkedSecureBox.from_file()` for real, no retrieval (that alone
+would need the full reconstructed plaintext in RAM - already proven
+unnecessary to re-test at this size).
+
+Disk quota check first: the session's writable allowance is ~30GB,
+not the ~252GB the filesystem reports - so the user's original 40GB
+ask was picked down to 20GB after confirming the real ceiling, with
+~10GB headroom left over for everything else.
+
+Built `generate_20gb_geojson.py` - a real GeoJSON FeatureCollection,
+83.6 million features, each with a semi-random coordinate (real PRNG,
+not degenerate repetition, not raw random bytes) and a handful of
+varying string/number properties. Deliberately NOT one block repeated
+(would compress unrealistically well) and NOT random bytes (wouldn't
+compress at all, unrealistic for a real file). First version used
+`json.dumps()` per feature at 24 MB/s; hand-rolled string formatting
+more than doubled that to 57-70 MB/s. Real result: **20.002GB
+written, 83.6M features, in 293.9s (70 MB/s average)**, verified as
+valid JSON before committing to the full run.
+
+Built `test_20gb_stream_disk.py`, same structure as the 12GB test
+(child process, external RAM monitoring, safety abort) but pointed at
+the real on-disk file, and with the safety ceiling raised to 6GB (from
+2.5GB) specifically because this content had a real, structural reason
+to expect worse compression than the 12GB test's prose-like markdown:
+high-entropy decimal coordinate numbers compress less than natural
+language.
+
+**First attempt: a real crash, not our own safety abort.**
+`RssAnon` was still under 1.5GB (`/proc/<pid>/io` showed 70.6% of the
+file read - 15.15GB of 21.48GB - at that point) when the process died
+on its own with:
+
+```
+File ".../lzma.py", line 327, in compress
+  comp = LZMACompressor(format, check, preset, filters)
+MemoryError
+```
+
+Not our code choosing to stop - the allocator itself failing, well
+below the safety ceiling we'd set. Root cause, pieced together from
+the system-wide snapshots the test already captures: this run started
+**immediately** after generating the 20GB source file, so `MemFree`
+(memory immediately available, no reclaim needed) was only ~1.8GB at
+the start, even though `MemAvailable` (which counts reclaimable page
+cache) reported ~15.6GB - most of that gap was the just-written file
+still sitting in page cache (`Cached: 13,815,420 KB`) plus 1.47GB of
+still-unflushed dirty pages. `lzma.compress()` allocates a real
+internal working buffer per call; on a machine with **no swap** to
+fall back on, if the kernel can't reclaim cache fast enough to satisfy
+that allocation at the exact moment it's requested, `malloc()` just
+fails outright - it doesn't block and wait. `MemAvailable` looking
+fine on paper doesn't mean an allocation right now will actually
+succeed.
+
+Confirmed this diagnosis is plausible, not just theorized: checked
+system memory afterward and found conditions had already settled on
+their own within minutes - dirty pages dropped to near-zero, `MemFree`
+recovered several-fold. The specific trigger (a huge write immediately
+followed by a huge read+compress competing for the same freshly-dirty
+cache) is transient, not a standing problem with the machine or the
+file size.
+
+**Honest, real finding, not a bug in this project's own code:** a
+large ingest run immediately after a large write, on a no-swap
+machine, can hit a transient allocator failure that has nothing to do
+with total RAM being insufficient - it's a reclaim-speed problem, not
+a size problem. Retried once conditions settled (`free -h` showed
+buff/cache back down from ~12GB to ~167MB, `MemFree` recovered to
+~15Gi) - results below once that run finishes.

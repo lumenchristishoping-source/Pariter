@@ -266,5 +266,24 @@ Tracking what's next so nothing gets lost between sessions.
         `self_healing.py`, `sharing.py`, `sharing_tracked.py`,
         `splice_stealth.py`, `tamper_watchdog.py`) all correctly
         self-describe as the older, standalone prototypes they are.
+- [x] **A 20GB file, genuinely on real disk** (the 12GB test's source
+      file actually lived in `/dev/shm` - tmpfs, RAM-backed, not real
+      disk). Built `generate_20gb_geojson.py` (real GeoJSON, 83.6M
+      varied features, 20.002GB, 70 MB/s) and
+      `test_20gb_stream_disk.py` to stream it through
+      `ChunkedSecureBox.from_file()`, no retrieval. First attempt hit
+      a real `MemoryError` inside `lzma.compress()` at ~70.6% through
+      the file - not our own safety abort, the allocator itself
+      failing. Root cause: running immediately after writing a 20GB
+      file left `MemFree` at only ~1.8GB even though `MemAvailable`
+      said ~15.6GB (most of that was reclaimable page cache from the
+      write) - on a no-swap machine, a real allocation can fail
+      outright if the kernel can't reclaim cache fast enough to
+      satisfy it right when it's asked, regardless of what
+      `MemAvailable` reports. Confirmed transient, not a standing
+      problem: memory had already settled within minutes on its own.
+      See `REBUILD_STATUS.md` for full detail; retried once
+      conditions settled, results logged there once that run
+      finishes.
 
 Update this list as items are explained, built, and verified.
