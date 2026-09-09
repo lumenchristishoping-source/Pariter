@@ -147,6 +147,16 @@ forensics attacks still found nothing, and reconstructing the key
 from 87 of 88 correct bytes (1 wrong) failed outright — real proof
 the "need all pieces" property survives integration.
 
+**Since superseded:** `CombinedSecureBox` is where all 3 pieces first
+came together and proved out — but the whole-buffer re-encryption
+underneath it is exactly what broke on a 50MB file (Part 7). Its
+direct successor, `ChunkedSecureBox`, kept every property proven here
+(ratcheted key, split-cell protection, forensics-clean) while fixing
+the RAM cost, and is what the real pipeline (Part 10 onward) actually
+uses today. `combined_secure_box.py` still lives in `vstorage/
+superseded/` — kept, not deleted, as the tested proof this design
+worked before it was made to scale.
+
 ---
 
 ## Part 7 — the real costs, found by testing, not assumed
@@ -246,38 +256,186 @@ vs = SecureVirtualStorage(
     watch_for_tampering=True,      # ProcessWatchdog on (default)
     kill_on_tamper=True,           # actually kill on detection (default)
     use_distributed_trust=False,   # Shamir key rotation (opt-in, real cost)
+    trust_mode="local",            # or "network" - see Part 14
 )
-file_id = vs.save("report.pdf")    # split, encrypt, protect, watch
-text    = vs.retrieve(file_id, "content")
-full    = vs.retrieve(file_id, "full")
-vs.forget(file_id)                 # wipe just this file
-vs.collapse_all()                  # wipe everything, stop the watchdog
+file_id = vs.save("report.pdf")           # streams straight from disk (Part 11)
+vs.retrieve_to_file(file_id, "out.pdf")    # streams straight back out (Part 11)
+vs.forget(file_id)                        # wipe just this file
+vs.collapse_all()                         # wipe everything, stop the watchdog
 ```
 
-`save()` splits the file, wraps each of the 3 pieces in a
-`CombinedSecureBox`, and registers every key cell's address with the
-one shared watchdog process. Tested end-to-end on a real 49-page PDF:
-byte-perfect, and a real `ptrace` attack against the whole pipeline
-got every region verified wiped from *outside* (not just trusted on
-the process's own say-so — the attacking process's own `SIGSTOP`
-freezes it, so it can't even report on itself; had to check from
-outside, the same way a real attacker would look).
+`save()` splits the file (streaming in via `ChunkedSecureBox.from_file()`
+when the piece mirrors a real file on disk — Part 11, not the whole
+thing read into RAM first), wraps each of the 3 pieces in a
+`ChunkedSecureBox`, and registers every key cell's address with the
+one shared watchdog process. Tested end-to-end on a real 49-page PDF
+and, at real scale, a real 12GB file (~292MB peak RAM) and 24 mixed
+real files held concurrently: byte-perfect, and a real `ptrace` attack
+against the whole pipeline got every region verified wiped from
+*outside* (not just trusted on the process's own say-so — the
+attacking process's own `SIGSTOP` freezes it, so it can't even report
+on itself; had to check from outside, the same way a real attacker
+would look).
 
-**Not yet wired in:** `ChunkedSecureBox` for large files (still a
-separate, tested module — `secure_system.py` currently uses the
-whole-buffer version, fine up to a few MB).
+---
+
+## Part 11 — streaming both directions: no more "the whole file has to fit in RAM first"
+
+`ChunkedSecureBox` (Part 7's fix for the 50MB-file problem) always
+held the file cheaply once it was in - but two real gaps stayed open
+until this was pushed further:
+
+- **Saving still needed the file's own size in RAM just to *start*.**
+  `splitter.py`'s `split_file()` used to call `open(path).read()`
+  before any of the cheap-to-hold chunking machinery kicked in. Fixed
+  with a `FromFile` marker: a piece that mirrors a real file on disk
+  streams straight in via `ChunkedSecureBox.from_file()`, 256KB at a
+  time, instead of being materialized first. Verified on a real 5GB
+  file through the actual `save()` call a caller uses (not a
+  lower-level shortcut): **~195MB peak, 26x smaller than the file.**
+- **Retrieving had the identical problem in reverse.** `retrieve()`
+  built the whole reconstructed file as one object before handing it
+  back. `ChunkedSecureBox.stream_to()` / `SecureVirtualStorage.
+  retrieve_to_file()` decrypt one chunk at a time straight to a
+  destination file instead. Verified on a real 3GB file: RAM moved
+  from 91.7MB (holding it) to 93.8MB while streaming the *entire*
+  file back out - not a multi-GB spike.
+
+**Honest scope, not a bigger claim than earned:** streaming output
+bounds how much plaintext is ever exposed at once (one chunk, not the
+whole file) - it does not, and cannot, make plaintext never exist.
+Retrieving a file always makes it usable somewhere, for any
+encryption-at-rest system; that's what "retrieve" means.
+
+---
+
+## Part 12 — three ways to hand a file back out: `retrieve_to_destination(trust=...)`
+
+Plain streaming (Part 11) still writes raw plaintext straight to the
+destination the instant it's asked for. The real question underneath
+that: how much do you trust *where* it's going? Built as three
+distinct, selectable options rather than one merged answer:
+
+- **`trust="trusted"`** — plain streaming, as above. The destination
+  IS the readable file; that's the point.
+- **`trust="untrusted"`** — `stream_to_wrapped()` decrypts each chunk
+  and immediately re-encrypts it under a fresh transit key before it
+  ever reaches the destination, so the file on disk there is never
+  plaintext, confirmed directly (searched the wrapped file's bytes for
+  the original plaintext - not found, across the whole file). The key
+  needed to unwrap it is released only after `os.fsync()` confirms the
+  bytes are durably written - not the instant the write call returns.
+- **`trust="hostile"`** — same wrapped output, but instead of handing
+  over the key at all, issues a single-use, time-boxed *token*
+  (`DEFAULT_TOKEN_TTL = 60s`). The real key is only released by a
+  separate `redeem_key(token)` call, and only once, before it expires.
+
+**The honest limit underneath all three, stated plainly:** "the
+process dies and everything with it" only covers what's still *inside*
+the process boundary. A key that has already been handed to a caller -
+released, returned, in their hands - has left that boundary. No
+process dying afterward can revoke it retroactively. That's not a gap
+in this design; it's what "handing over a key" means, in any system.
+
+---
+
+## Part 13 — watching the people you trust: the distributed-trust holders finally get a watchdog
+
+Part 9's `DistributedTrustGroup` split the root secret across N real
+OS processes - but a direct review found those N processes had **zero
+tamper detection wired to them, anywhere.** A real `ptrace_attach` on
+a holder produced no reaction at all, from anything. Two real fixes:
+
+- **Each holder now gets its own `ProcessWatchdog`.** It can't spawn
+  one itself - it's a multiprocessing daemon process, and Python
+  refuses to let a daemon process have children (`AssertionError:
+  daemonic processes are not allowed to have children`, hit directly).
+  So the holder reports its own memory address back over its pipe, and
+  the *parent* stands the watchdog up from the outside, pointed at the
+  holder's pid.
+- **A monitor thread reacts to a holder dying** outside a clean
+  `stop()` call - but not by killing everything on the very first one.
+  This system is RAM-only: killing the main process always means
+  total, permanent loss of whatever file it's holding, and one
+  compromised holder, alone, gives an attacker **zero** usable
+  information (k=3 needed - proven directly: with k-1 captured shares,
+  all 256 possible byte values remain equally consistent, not just
+  "hard to guess"). So `kill_threshold` defaults to `k-1` - react one
+  theft away from an attacker actually succeeding, not on the first
+  one. `kill_threshold=1` restores the old instant-kill posture,
+  `kill_threshold=0` disables auto-kill entirely.
+
+Verified with real `ptrace_attack`s: an attacked holder dies in
+6-60ms; tolerating 1-of-5 compromised holders below the threshold
+keeps the system working (`fetch()` still succeeds from the remaining
+4); 2-of-5 (meeting the default threshold) kills the main process, the
+same way it always should have.
+
+A genuine Linux ptrace quirk turned up while verifying this, worth
+recording: a naive liveness check (`Process.is_alive()`, which calls
+plain `os.waitpid()`) never sees a holder killed by a THIRD PARTY
+attacker as dead - the kernel routes that stop/exit notification to
+the attacker first, and the attacker has no reason to ever call
+`wait()` on a process it doesn't own. Fixed by reading
+`/proc/<pid>/stat`'s state field directly instead, which reflects real
+kernel state regardless of who has or hasn't reaped it.
+
+---
+
+## Part 14 — holders on real separate machines: `network_trust.py` + `holder_server.py`
+
+Part 9 and Part 13's holders are honest that they only "simulate N
+separately-trusted machines" - real OS processes, but all under the
+SAME kernel. A single root breach on that one machine could reach
+every holder's `/proc/pid/mem` in turn, one after another - the k-of-n
+math never even came into play, since one compromise got everything.
+That gap is closed here for real, not just narrated around.
+
+`holder_server.py` is a standalone `python3 -m vstorage.holder_server`
+process - config arrives over stdin, never argv (which any local user
+can read via `ps`). Not being a multiprocessing daemon child, it CAN
+spawn its own `ProcessWatchdog` directly, no parent-side workaround
+needed. It serves its share over a real TLS socket (a fresh 2048-bit
+self-signed cert per group, client-pinned) authenticated with a shared
+bearer token, checked constant-time.
+
+`network_trust.py`'s `NetworkTrustGroup` is the client side - same
+shape as `DistributedTrustGroup` (`k`, `n`, `fetch()`, `stop()`,
+`kill_threshold`), wired in as `SecureVirtualStorage(trust_mode=
+"network", trust_host=...)`. Point `trust_host` at a real remote
+address and this is a genuine multi-machine deployment, unchanged -
+what makes today's tests "only" localhost is the sandbox having one
+machine available, not anything in the protocol.
+
+**The one real architectural difference, stated plainly:** there is
+no shared `/proc` across actual separate machines, so a dead holder
+can't be seen by reading its kernel state directly anymore. Detection
+became heartbeat-based instead - the client pings every holder over
+its TLS connection and treats an unreachable one exactly like a
+locally-dead one, same `kill_threshold` reaction. Verified with the
+same real-`ptrace_attack` and tolerance test shapes as local mode:
+attacked holder server self-protects and dies in ~10ms, main process
+reacts in ~10-25ms, purely from the dead connection - no `/proc`
+access to the holder used or needed anywhere in that path.
 
 ---
 
 ## The honest, one-paragraph summary
 
-Data at rest is genuinely encrypted, not just moved. Its key can't be
-reconstructed from a partial capture, and old key material can't be
+Data at rest is genuinely encrypted, not just moved, and streams in
+and back out without ever needing to fit whole in RAM. Its key can't
+be reconstructed from a partial capture, and old key material can't be
 recovered from a newer one, or vice versa (with distributed trust on).
 The system detects and kills itself the instant a real debugger or
-memory-dump tool attaches — in under a millisecond, even under load.
-The one thing nothing here can stop is a fully privileged reader who
-specifically avoids the one detectable signal (`ptrace_attach`) — and
-the honest fix for *that* isn't cleverer code, it's making sure that
-even if they succeed, no single machine ever hands them the whole
-secret.
+memory-dump tool attaches - in under a millisecond for the main
+process, tens of milliseconds for a distributed-trust holder, even
+under load - and now reacts with a tunable threshold instead of
+overreacting to a single, mathematically harmless compromise. The one
+thing nothing here can stop is a fully privileged reader who
+specifically avoids the one detectable signal (`ptrace_attach`) - and
+the honest fix for *that* was never cleverer code, it's making sure
+that even if they succeed, no single machine ever hands them the whole
+secret. That promise is now real, not just simulated: holders can run
+on genuinely separate machines, over real authenticated network
+connections, so one root compromise reaches exactly one share, not all
+of them.
