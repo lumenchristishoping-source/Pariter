@@ -214,6 +214,31 @@ Tracking what's next so nothing gets lost between sessions.
       the same way text-like files now are. Not investigated further
       yet; likely bounded by what the parser libraries themselves do
       internally.
+- [ ] **Distribute compression + encryption across multiple worker
+      machines, for scale** - user's idea, saved here rather than
+      built now (needs a real second machine to properly validate,
+      not just this one sandbox). Each 256KB chunk compresses and
+      encrypts independently - chunk N never needs chunk N-1's
+      result - so this is naturally parallelizable across machines,
+      not just cores. Sketch: a coordinator reads the file off disk
+      (as today) and hands raw chunks round-robin to worker machines;
+      each worker does the CPU-heavy LZMA + AES-GCM work with its OWN
+      CPU/RAM, then keeps ITS slice falling in its own RAM, watched by
+      its own `ProcessWatchdog` - reusing the exact standalone-process
+      -plus-watchdog pattern already built and proven for distributed
+      trust (`holder_server.py`), not a new mechanism. Real bonus
+      beyond raw speed: no single machine would hold the whole file
+      anymore, only its own slice - the same "no single point of
+      compromise" property distributed trust already gives the KEY,
+      extended to the DATA. Honest costs to weigh before building:
+      real network round-trip per chunk (batch many chunks per call,
+      not one per 256KB - learned that exact lesson the hard way with
+      disk reads, see the 20GB-on-disk entries above), and retrieval
+      gets more complex (fetch from N machines, reassemble in order).
+      The protocol itself could be prototyped the same way network-
+      separated trust was - multiple real processes on one sandbox
+      first, standing in for separate machines - before ever touching
+      real second hardware.
 - [x] **`ARCHITECTURE.md` had gone stale** — user caught it directly.
       Still described `secure_system.py` using the whole-buffer
       `CombinedSecureBox` with `ChunkedSecureBox` "not yet wired in"
