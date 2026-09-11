@@ -1,4 +1,4 @@
-*Shock: holding a real 20GB *Markdown* file continuously falling can cost as
+*Shock: holding a real 20GB **Markdown**file continuously falling can cost as
 little as ~1.99GB of RAM - and it's never written to disk (ROM/local
 storage) either. See
 [Benchmarks & Accomplishments](#benchmarks--accomplishments).*
@@ -6,7 +6,7 @@ storage) either. See
 # Virtual Storage
 
 A software-only, RAM-based, ephemeral storage system - no disk
-dependency. Files are split, compressed, and kept in continuous motion
+dependency. Files **(which are only documents like logs, geojson, txt, md, csv, pdfs and other written files not videos, images and archives)** are split, compressed, and kept in continuous motion
 through small falling boxes in anonymous memory, never written to disk.
 
 On top of that, a hardened security layer: real AES-GCM encryption
