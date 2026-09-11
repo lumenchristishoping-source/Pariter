@@ -1,4 +1,4 @@
-*Shock: holding a real 20GB **Markdown** file continuously falling can cost as
+*Shock: holding a real 20GB **Geojson** file continuously falling can cost as
 little as ~1.99GB of RAM - and it's never written to disk (ROM/local
 storage) either. See
 [Benchmarks & Accomplishments](#benchmarks--accomplishments).*
@@ -6,7 +6,7 @@ storage) either. See
 # Virtual Storage
 
 A software-only, RAM-based, ephemeral storage system - no disk
-dependency. Files **(which are only documents like logs, geojson, txt, md, csv, pdfs and other written files not videos, images and archives)** are split, compressed, and kept in continuous motion
+dependency. Files **(which are only documents like logs, geojson, txt, md, csv, pdfs and other written files not videos, images and not all archives)** are split, compressed, and kept in continuous motion
 through small falling boxes in anonymous memory, never written to disk.
 
 On top of that, a hardened security layer: real AES-GCM encryption
@@ -128,7 +128,7 @@ work fine either way, it's specifically the tamper-detection layer
 (main watchdog and distributed-trust holder watchdogs alike, since
 they share this exact mechanism) that has nothing to react to.
 
-### A 20GB file, genuinely on real disk - through 2 real bugs to a clean pass
+### A 20GB geojson file, genuinely on real disk - through 2 real bugs to a clean pass
 
 The biggest, most rigorously tested file yet - and the only one whose
 source genuinely lived on real disk (the 12GB test below actually used
@@ -150,7 +150,7 @@ regions instead of one mapping each, cutting mapping count ~2,000x).
 | RAM after collapse | **~33MB** - clean, near-total release |
 | Safety abort / system-wide leak | neither - never triggered, `MemAvailable` delta -10.2MB across the whole run |
 
-### A 12GB file, held at ~292MB
+### A 12GB md file, held at ~292MB
 
 A single real 12GB markdown file, streamed in chunk-by-chunk
 (`ChunkedSecureBox.from_file()`), compressed, encrypted, and kept
@@ -166,7 +166,7 @@ actually streamed from genuine disk.
 | Safety abort (2.5GB ceiling) | never came close to triggering |
 | Build time | 16.5 min (real LZMA compression, not a shortcut) |
 
-### A 5GB file, through the real save() front door
+### A 5GB md file, through the real save() front door
 
 Not a lower-level primitive - the actual `SecureVirtualStorage.save()`
 call a caller uses, proving the fix that made this possible: `save()`
@@ -178,7 +178,7 @@ used to need roughly a file's own size in RAM just to *start*.
 | Save time | 264.55s (real compression + encryption) |
 | Correctness | byte-perfect |
 
-### 3GB, streamed back out two ways - plain and fully encrypted-path
+### 3GB (written file), streamed back out two ways - plain and fully encrypted-path
 
 Retrieval had the identical problem in reverse (build the whole file
 in RAM before handing it back) - fixed with streaming output, then
