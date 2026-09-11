@@ -1,4 +1,4 @@
-*Shock: holding a real 20GB **Markdown**file continuously falling can cost as
+*Shock: holding a real 20GB **Markdown** file continuously falling can cost as
 little as ~1.99GB of RAM - and it's never written to disk (ROM/local
 storage) either. See
 [Benchmarks & Accomplishments](#benchmarks--accomplishments).*
